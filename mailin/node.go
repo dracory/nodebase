@@ -468,13 +468,16 @@ func (n *MailInNode) Stop() error {
 	var err error
 	n.stopOnce.Do(func() {
 		close(n.stopCh)
-		if n.client != nil {
-			err = n.client.Logout()
-		}
-		// Only wait for the watch loop when Execute actually started
-		// it — a failed activation leaves doneCh open forever.
+		// Wait for the watch loop before logging out — the go-imap
+		// client is not safe for concurrent use, so Logout must not
+		// overlap an in-flight fetch. Only wait when Execute actually
+		// started the loop — a failed activation leaves doneCh open
+		// forever.
 		if n.watching.Load() {
 			<-n.doneCh
+		}
+		if n.client != nil {
+			err = n.client.Logout()
 		}
 	})
 	return err
