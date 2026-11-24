@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/tls"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,14 +20,23 @@ import (
 // and an emitted-message capture for the timeout flush path.
 type fakeHost struct {
 	states  map[string]interface{}
+	mu      sync.Mutex // guards emitted — the timeout flush emits from a timer goroutine
 	emitted []nodestore.MessageInterface
 }
 
 func newFakeHost() *fakeHost { return &fakeHost{states: map[string]interface{}{}} }
 
 func (h *fakeHost) Emit(wf, nodeID string, p nodestore.MessageInterface, ports []string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	h.emitted = append(h.emitted, p)
 	return nil
+}
+
+func (h *fakeHost) emittedMsgs() []nodestore.MessageInterface {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]nodestore.MessageInterface(nil), h.emitted...)
 }
 func (h *fakeHost) EmitEvent(wf, nodeID, name, level, message string) {}
 func (h *fakeHost) InjectMessage(wf, from string, p nodestore.MessageInterface) (string, chan nodestore.MessageInterface, error) {
@@ -206,13 +216,14 @@ func TestJoinTimeoutFlush(t *testing.T) {
 		t.Fatalf("execute failed: %v", err)
 	}
 	deadline := time.Now().Add(2 * time.Second)
-	for len(host.emitted) == 0 && time.Now().Before(deadline) {
+	for len(host.emittedMsgs()) == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if len(host.emitted) != 1 {
+	emitted := host.emittedMsgs()
+	if len(emitted) != 1 {
 		t.Fatal("timeout flush should emit the partial group")
 	}
-	if arr := host.emitted[0].GetPayload().([]interface{}); len(arr) != 1 {
+	if arr := emitted[0].GetPayload().([]interface{}); len(arr) != 1 {
 		t.Fatalf("flushed group wrong: %v", arr)
 	}
 }

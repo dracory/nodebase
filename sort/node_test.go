@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/tls"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 // ExecuteDownstream calls and a running workflow for emitSequence.
 type fakeHost struct {
 	states     map[string]interface{}
+	mu         sync.Mutex // guards downstream — seq emission runs on a goroutine
 	downstream []nodestore.MessageInterface
 	workflow   nodestore.WorkflowInterface
 }
@@ -52,7 +54,15 @@ func (h *fakeHost) GetOrCreateNodeState(wf, nodeID string, f func() interface{})
 	return s
 }
 func (h *fakeHost) ExecuteDownstream(ctx context.Context, wf, from string, w nodestore.WorkflowInterface, p nodestore.MessageInterface, ports []string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	h.downstream = append(h.downstream, p)
+}
+
+func (h *fakeHost) downstreamMsgs() []nodestore.MessageInterface {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]nodestore.MessageInterface(nil), h.downstream...)
 }
 func (h *fakeHost) NodeEnv(wf, nodeID, name string) (interface{}, bool) { return nil, false }
 func (h *fakeHost) ResolvedContextStore() nodebase.ContextStore         { return nil }
@@ -136,17 +146,18 @@ func TestSortSeq(t *testing.T) {
 	n.Execute(ctx, partMsg("g", 1, 3, "b"))
 
 	deadline := time.Now().Add(2 * time.Second)
-	for len(host.downstream) < 3 && time.Now().Before(deadline) {
+	for len(host.downstreamMsgs()) < 3 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if len(host.downstream) != 3 {
-		t.Fatalf("expected 3 re-emitted messages, got %d", len(host.downstream))
+	downstream := host.downstreamMsgs()
+	if len(downstream) != 3 {
+		t.Fatalf("expected 3 re-emitted messages, got %d", len(downstream))
 	}
-	if host.downstream[0].GetPayload() != "a" || host.downstream[2].GetPayload() != "c" {
-		t.Fatalf("seq order wrong: %v %v", host.downstream[0].GetPayload(), host.downstream[2].GetPayload())
+	if downstream[0].GetPayload() != "a" || downstream[2].GetPayload() != "c" {
+		t.Fatalf("seq order wrong: %v %v", downstream[0].GetPayload(), downstream[2].GetPayload())
 	}
 	// parts.index renumbered to sorted position
-	pm := host.downstream[0].GetMetadata()["parts"].(map[string]interface{})
+	pm := downstream[0].GetMetadata()["parts"].(map[string]interface{})
 	if pm["index"] != 0 || pm["count"] != 3 {
 		t.Fatalf("parts not renumbered: %v", pm)
 	}
@@ -174,13 +185,14 @@ func TestSortSeqByKey(t *testing.T) {
 	n.Execute(ctx, mk(0, 2))
 	n.Execute(ctx, mk(1, 1))
 	deadline := time.Now().Add(2 * time.Second)
-	for len(host.downstream) < 2 && time.Now().Before(deadline) {
+	for len(host.downstreamMsgs()) < 2 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if len(host.downstream) != 2 {
-		t.Fatalf("expected 2 messages, got %d", len(host.downstream))
+	downstream := host.downstreamMsgs()
+	if len(downstream) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(downstream))
 	}
-	first := host.downstream[0].GetPayload().(map[string]interface{})
+	first := downstream[0].GetPayload().(map[string]interface{})
 	if first["rank"] != 1.0 {
 		t.Fatalf("seqKey sort wrong: %v", first)
 	}
