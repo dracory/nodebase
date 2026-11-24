@@ -7,11 +7,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
-	nodestore "github.com/dracory/nodestore"
 	"github.com/dracory/nodebase"
+	nodestore "github.com/dracory/nodestore"
 
 	"github.com/coder/websocket"
 )
@@ -21,6 +22,7 @@ import (
 // other NodeHost surface is inert — the hub only needs RunningFlow,
 // InjectMessage and HTTPAuthFunc.
 type stubHost struct {
+	mu       sync.Mutex
 	flows    map[string]nodestore.WorkflowInterface
 	injected []injectedMsg
 }
@@ -36,7 +38,15 @@ func newStubHost() *stubHost {
 }
 
 func (h *stubHost) addFlow(wf nodestore.WorkflowInterface) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	h.flows[wf.GetID()] = wf
+}
+
+func (h *stubHost) removeFlow(workflowID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.flows, workflowID)
 }
 
 func (h *stubHost) Emit(workflowID, nodeID string, payload nodestore.MessageInterface, ports []string) error {
@@ -44,8 +54,17 @@ func (h *stubHost) Emit(workflowID, nodeID string, payload nodestore.MessageInte
 }
 func (h *stubHost) EmitEvent(workflowID, nodeID, nodeName, level, message string) {}
 func (h *stubHost) InjectMessage(workflowID, fromNodeID string, payload nodestore.MessageInterface) (string, chan nodestore.MessageInterface, error) {
+	h.mu.Lock()
 	h.injected = append(h.injected, injectedMsg{workflowID, fromNodeID, payload})
+	h.mu.Unlock()
 	return "msg-1", nil, nil
+}
+
+// injections returns a snapshot of the recorded InjectMessage log.
+func (h *stubHost) injections() []injectedMsg {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]injectedMsg(nil), h.injected...)
 }
 func (h *stubHost) ResolveResponse(msgID string, payload nodestore.MessageInterface) error {
 	return nil
@@ -55,6 +74,8 @@ func (h *stubHost) LookupNode(workflowID, nodeID string) (nodestore.NodeInterfac
 	return nil, false
 }
 func (h *stubHost) RunningFlow(workflowID string) (nodestore.WorkflowInterface, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	wf, ok := h.flows[workflowID]
 	return wf, ok
 }
@@ -73,8 +94,8 @@ func (h *stubHost) LoadTLSConfig(workflowID, ref string) (*tls.Config, error) {
 }
 func (h *stubHost) FileRootPath() string                             { return "" }
 func (h *stubHost) ExecAllowed() bool                                { return false }
-func (h *stubHost) SharedHTTPRouter() nodebase.HTTPRouter               { return nil }
-func (h *stubHost) QueueService() nodebase.QueueService                 { return nil }
+func (h *stubHost) SharedHTTPRouter() nodebase.HTTPRouter            { return nil }
+func (h *stubHost) QueueService() nodebase.QueueService              { return nil }
 func (h *stubHost) HTTPAuthFunc() func(*http.Request) (string, bool) { return nil }
 
 // newHub wires a stub host + constructed hub.
@@ -266,13 +287,13 @@ func TestClientInputInjection(t *testing.T) {
 	}
 	// Give the read loop a beat to process.
 	deadline := time.Now().Add(2 * time.Second)
-	for len(host.injected) == 0 && time.Now().Before(deadline) {
+	for len(host.injections()) == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if len(host.injected) != 1 {
-		t.Fatalf("want 1 injected message, got %d", len(host.injected))
+	if got := host.injections(); len(got) != 1 {
+		t.Fatalf("want 1 injected message, got %d", len(got))
 	}
-	got := host.injected[0]
+	got := host.injections()[0]
 	if got.workflowID != "wf1" || got.nodeID != "b1" {
 		t.Fatalf("injection addressed wrong: %+v", got)
 	}
@@ -307,7 +328,7 @@ func TestUndeployClosesClients(t *testing.T) {
 	_ = readMsg(t, conn)
 
 	// A real host stops reporting the flow running on undeploy.
-	delete(host.flows, "wf1")
+	host.removeFlow("wf1")
 	hub.WorkflowStopped("wf1")
 	msg := readMsg(t, conn)
 	if msg["type"] != "close" {
