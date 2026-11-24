@@ -7,6 +7,7 @@ package mailout
 
 import (
 	"context"
+	"net"
 	"strings"
 	"testing"
 
@@ -139,9 +140,22 @@ func TestMailOutExecuteErrors(t *testing.T) {
 	if _, err := n2.Execute(context.Background(), nodestore.NewMessage().SetPayload("x")); err == nil {
 		t.Fatal("missing from should fail")
 	}
-	// unreachable server surfaces the dial error
-	n3 := newNode(&MailOutConfig{Host: "127.0.0.1", Port: 1, Security: "plain", From: "me@x", To: "a@x"})
+	// a listener that accepts then drops the connection surfaces a
+	// transport error without a dial timeout
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen failed: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err == nil {
+			conn.Close()
+		}
+	}()
+	port := ln.Addr().(*net.TCPAddr).Port
+	n3 := newNode(&MailOutConfig{Host: "127.0.0.1", Port: port, Security: "plain", From: "me@x", To: "a@x"})
 	if _, err := n3.Execute(context.Background(), nodestore.NewMessage().SetPayload("x")); err == nil {
-		t.Fatal("unreachable smtp should fail")
+		t.Fatal("dropped smtp should fail")
 	}
 }

@@ -77,7 +77,8 @@ func wsPair(t *testing.T, host *fakeHost) *websocket.Conn {
 			return nodebase.NewWSSessions()
 		}).(*nodebase.WSSessions)
 		sessions.Put("s1", c)
-		time.Sleep(1200 * time.Millisecond) // keep the handler alive while the client reads
+		// keep the handler alive while the client reads
+		time.Sleep(600 * time.Millisecond)
 	}))
 	t.Cleanup(srv.Close)
 	conn, _, err := websocket.Dial(context.Background(),
