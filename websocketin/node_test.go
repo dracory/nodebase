@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,13 +21,28 @@ import (
 
 // fakeHost captures emitted payloads and keeps node state.
 type fakeHost struct {
+	mu      sync.Mutex // guards emitted/state — connections emit from HTTP handler goroutines
 	emitted []nodestore.MessageInterface
 	state   map[string]interface{}
 }
 
 func (h *fakeHost) Emit(wf, nodeID string, p nodestore.MessageInterface, ports []string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	h.emitted = append(h.emitted, p)
 	return nil
+}
+
+func (h *fakeHost) emittedMsgs() []nodestore.MessageInterface {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]nodestore.MessageInterface(nil), h.emitted...)
+}
+
+func (h *fakeHost) nodeState(key string) interface{} {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.state[key]
 }
 func (h *fakeHost) EmitEvent(wf, nodeID, name, level, message string) {}
 func (h *fakeHost) InjectMessage(wf, from string, p nodestore.MessageInterface) (string, chan nodestore.MessageInterface, error) {
@@ -41,6 +57,8 @@ func (h *fakeHost) RunningFlow(wf string) (nodestore.WorkflowInterface, bool) { 
 func (h *fakeHost) RunContext(wf string) context.Context                      { return context.Background() }
 func (h *fakeHost) GetOrCreateNodeState(wf, nodeID string, f func() interface{}) interface{} {
 	key := wf + ":" + nodeID
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if h.state == nil {
 		h.state = map[string]interface{}{}
 	}
@@ -108,8 +126,8 @@ func TestWebSocketInRoundTrip(t *testing.T) {
 	if err := conn.Write(context.Background(), websocket.MessageText, []byte("hello")); err != nil {
 		t.Fatalf("write failed: %v", err)
 	}
-	waitFor(t, func() bool { return len(host.emitted) >= 1 }, "ws emission")
-	m := host.emitted[0]
+	waitFor(t, func() bool { return len(host.emittedMsgs()) >= 1 }, "ws emission")
+	m := host.emittedMsgs()[0]
 	if m.GetPayload() != "hello" {
 		t.Fatalf("payload wrong: %v", m.GetPayload())
 	}
@@ -118,7 +136,7 @@ func TestWebSocketInRoundTrip(t *testing.T) {
 		t.Fatal("sessionId metadata missing")
 	}
 	// session registered so websocketOut can write back
-	sessions := host.state["wf:"+nodebase.WSSessionsKey].(*nodebase.WSSessions)
+	sessions := host.nodeState("wf:" + nodebase.WSSessionsKey).(*nodebase.WSSessions)
 	if _, ok := sessions.Get(sid); !ok {
 		t.Fatalf("session %q not registered", sid)
 	}

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 
 // fakeHost carries the node-state slot holding WSSessions.
 type fakeHost struct {
+	mu    sync.Mutex // guards state — GetOrCreateNodeState runs on the httptest handler goroutine too
 	state map[string]interface{}
 }
 
@@ -39,6 +41,8 @@ func (h *fakeHost) RunningFlow(wf string) (nodestore.WorkflowInterface, bool) { 
 func (h *fakeHost) RunContext(wf string) context.Context                      { return context.Background() }
 func (h *fakeHost) GetOrCreateNodeState(wf, nodeID string, f func() interface{}) interface{} {
 	key := wf + ":" + nodeID
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if h.state == nil {
 		h.state = map[string]interface{}{}
 	}

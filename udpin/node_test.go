@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"net"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,12 +18,21 @@ import (
 
 // fakeHost captures emitted payloads.
 type fakeHost struct {
+	mu      sync.Mutex // guards emitted — the socket read loop emits from a goroutine
 	emitted []nodestore.MessageInterface
 }
 
 func (h *fakeHost) Emit(wf, nodeID string, p nodestore.MessageInterface, ports []string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	h.emitted = append(h.emitted, p)
 	return nil
+}
+
+func (h *fakeHost) emittedMsgs() []nodestore.MessageInterface {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]nodestore.MessageInterface(nil), h.emitted...)
 }
 func (h *fakeHost) EmitEvent(wf, nodeID, name, level, message string) {}
 func (h *fakeHost) InjectMessage(wf, from string, p nodestore.MessageInterface) (string, chan nodestore.MessageInterface, error) {
@@ -75,13 +85,14 @@ func TestUDPInReceives(t *testing.T) {
 	sender.Write([]byte("ping"))
 
 	deadline := time.Now().Add(3 * time.Second)
-	for len(host.emitted) == 0 && time.Now().Before(deadline) {
+	for len(host.emittedMsgs()) == 0 && time.Now().Before(deadline) {
 		time.Sleep(15 * time.Millisecond)
 	}
-	if len(host.emitted) == 0 {
+	emitted := host.emittedMsgs()
+	if len(emitted) == 0 {
 		t.Fatal("no datagram emitted")
 	}
-	m := host.emitted[0]
+	m := emitted[0]
 	if m.GetPayload() != "ping" {
 		t.Fatalf("payload wrong: %v", m.GetPayload())
 	}
