@@ -103,11 +103,13 @@ func messageWithError(m nodestore.MessageInterface, err *string) nodestore.Messa
 	return m
 }
 
-// ClonePayload deep-copies a payload for a fan-out branch: Payload is
-// copied via JSON round-trip (so sibling branches can't share maps),
-// Metadata is shallow-copied preserving the msgId needed by response
-// nodes. A clone is a new message instance: it gets a fresh envelope
-// ID and records the producing instance's ID in metadata.parentMsgId.
+// ClonePayload deep-copies a payload for a fan-out branch: Payload and
+// Metadata are copied via JSON round-trip (so sibling branches can't
+// share maps — nested maps like parts would otherwise race when a
+// node mutates them on an async emit while the engine journals
+// another clone). A clone is a new message instance: it gets a fresh
+// envelope ID and records the producing instance's ID in
+// metadata.parentMsgId.
 func ClonePayload(p nodestore.MessageInterface) nodestore.MessageInterface {
 	if p == nil {
 		return nil
@@ -133,9 +135,18 @@ func ClonePayload(p nodestore.MessageInterface) nodestore.MessageInterface {
 		}
 	}
 	if p.GetMetadata() != nil {
-		clone.SetMetadata(make(map[string]interface{}, len(p.GetMetadata())))
-		for k, v := range p.GetMetadata() {
-			clone.GetMetadata()[k] = v
+		if raw, err := json.Marshal(p.GetMetadata()); err == nil {
+			var md map[string]interface{}
+			if json.Unmarshal(raw, &md) == nil {
+				clone.SetMetadata(md)
+			}
+		}
+		if clone.GetMetadata() == nil {
+			// Non-JSON metadata: shallow-copy rather than drop.
+			clone.SetMetadata(make(map[string]interface{}, len(p.GetMetadata())))
+			for k, v := range p.GetMetadata() {
+				clone.GetMetadata()[k] = v
+			}
 		}
 	}
 	if p.GetID() != "" {

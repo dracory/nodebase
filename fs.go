@@ -141,6 +141,15 @@ func OpenFs(locator string, creds *FsCredentials) (Fs, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
+	// Credentials embedded in the locator URI are used (sftp/ftp read
+	// u.User) but live in the flow document as plain config — outside
+	// the credential-sentinel model. Warn so operators move them to
+	// the credential "password" field instead.
+	if u != nil && u.User != nil {
+		if _, hasPw := u.User.Password(); hasPw {
+			log.Printf("fs locator %s:// embeds a password in the URI; prefer the credential \"password\" config key so the secret stays behind the credential sentinel", u.Scheme)
+		}
+	}
 	switch scheme {
 	case "file":
 		return LocalFs{}, dir, nil

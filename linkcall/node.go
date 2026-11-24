@@ -108,8 +108,11 @@ func (n *LinkCallNode) Execute(ctx context.Context, input nodestore.MessageInter
 	}
 
 	// Push this call onto the message's link call stack. The entry's
-	// msgId is filled in right after InjectMessage registers it; the
-	// stack slice is shared across downstream payload clones.
+	// msgId is intentionally left empty — writing it here (after
+	// InjectMessage returns) would race the injected traversal, which
+	// clones the metadata on a separate goroutine. linkOut's
+	// execReturn falls back to the injected message's stamped "msgId"
+	// metadata key, which is the same pending correlation id.
 	if input.GetMetadata() == nil {
 		input.SetMetadata(map[string]interface{}{})
 	}
@@ -121,7 +124,6 @@ func (n *LinkCallNode) Execute(ctx context.Context, input nodestore.MessageInter
 	if err != nil {
 		return nil, fmt.Errorf("linkCall: cannot reach link %q: %w", target, err)
 	}
-	entry["msgId"] = msgID
 
 	timeout := nodebase.DefaultLinkCallTimeout
 	if n.config.Timeout > 0 {

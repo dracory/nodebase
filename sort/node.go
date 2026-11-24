@@ -4,6 +4,7 @@ package sort
 import (
 	"context"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	nodestore "github.com/dracory/nodestore"
 	"github.com/dracory/nodebase"
@@ -186,7 +187,16 @@ func (n *SortNode) executeSeq(input nodestore.MessageInterface) (nodestore.Messa
 // parts.index to the sorted position before sending.
 func (n *SortNode) emitSequence(msgs []nodestore.MessageInterface) {
 	for i, msg := range msgs {
-		if parts, ok := msg.GetMetadata()["parts"].(map[string]interface{}); ok {
+		// Detach the emitted copy's metadata before renumbering —
+		// the buffered original may still be journaled by the engine
+		// on another goroutine, and writing parts on it would race.
+		em := nodestore.NewMessage().SetID(msg.GetID()).SetPayload(msg.GetPayload()).SetTimestamp(msg.GetTimestamp())
+		if err := msg.GetError(); err != nil {
+			em.SetError(*err)
+		}
+		em.SetMetadata(deepCopyMetadata(msg.GetMetadata()))
+		msgs[i] = em
+		if parts, ok := em.GetMetadata()["parts"].(map[string]interface{}); ok {
 			parts["index"] = i
 			parts["count"] = len(msgs)
 		}
@@ -199,6 +209,24 @@ func (n *SortNode) emitSequence(msgs []nodestore.MessageInterface) {
 	for _, msg := range msgs {
 		n.host.ExecuteDownstream(ctx, n.workflowID, n.GetID(), workflow, msg, nil)
 	}
+}
+
+// deepCopyMetadata copies a metadata map via JSON so nested maps
+// (parts, link call stacks) detach from the original — shallow copies
+// leave them shared and racy.
+func deepCopyMetadata(md map[string]interface{}) map[string]interface{} {
+	if md == nil {
+		return nil
+	}
+	raw, err := json.Marshal(md)
+	if err != nil {
+		return md
+	}
+	var out map[string]interface{}
+	if json.Unmarshal(raw, &out) != nil {
+		return md
+	}
+	return out
 }
 
 // sortValues orders an array using JS-like compare semantics: numeric

@@ -362,8 +362,9 @@ func (n *FunctionNode) injectGlobals(vm *goja.Runtime, input nodestore.MessageIn
 	// env.get resolves the Node-RED env scoping chain — group env →
 	// subflow overlay → flow env → global-config → process env (see
 	// host.NodeEnv for the first four; os.Getenv is the last). The
-	// OS fallback is deliberate (flows read e.g. credentials from
-	// env), not an oversight.
+	// OS fallback is gated by the host's optional OSEnvAllowed method
+	// (engine AllowOSEnv / GOFLOW_ALLOW_OS_ENV): without it a flow
+	// author could read arbitrary process secrets via env.get.
 	envObj := map[string]interface{}{
 		"get": func(call goja.FunctionCall) goja.Value {
 			if len(call.Arguments) == 0 {
@@ -372,6 +373,9 @@ func (n *FunctionNode) injectGlobals(vm *goja.Runtime, input nodestore.MessageIn
 			name := call.Arguments[0].String()
 			if v, ok := n.host.NodeEnv(n.workflowID, n.GetID(), name); ok {
 				return vm.ToValue(v)
+			}
+			if g, ok := n.host.(interface{ OSEnvAllowed() bool }); ok && !g.OSEnvAllowed() {
+				return goja.Undefined()
 			}
 			return vm.ToValue(os.Getenv(name))
 		},
