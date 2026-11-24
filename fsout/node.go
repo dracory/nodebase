@@ -5,8 +5,9 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
-	nodestore "github.com/dracory/nodestore"
 	"github.com/dracory/nodebase"
+	nodestore "github.com/dracory/nodestore"
+	"net/url"
 	"strings"
 )
 
@@ -99,7 +100,13 @@ var schema = map[string]interface{}{
 		"hostKey": map[string]interface{}{
 			"type":        "string",
 			"title":       "Host Key",
-			"description": "sftp locators: expected host public key (authorized_keys or base64); empty accepts any key (insecure)",
+			"description": "sftp locators: expected host public key (authorized_keys or base64); required unless acceptAnyHostKey is set",
+		},
+		"acceptAnyHostKey": map[string]interface{}{
+			"type":        "boolean",
+			"title":       "Accept Any Host Key",
+			"description": "sftp locators: skip host-key verification (INSECURE — vulnerable to MITM; prefer pinning hostKey)",
+			"default":     false,
 		},
 	},
 	"required": []string{"location"},
@@ -129,9 +136,10 @@ type FsOutConfig struct {
 	// as the file node).
 	Encoding string `json:"encoding"`
 	// Credentials for remote locators; Password is credential-typed.
-	Password string `json:"password"`
-	KeyFile  string `json:"keyFile"`
-	HostKey  string `json:"hostKey"`
+	Password         string `json:"password"`
+	KeyFile          string `json:"keyFile"`
+	HostKey          string `json:"hostKey"`
+	AcceptAnyHostKey bool   `json:"acceptAnyHostKey"`
 }
 
 // FsOutNode writes the payload to a file under a dir locator, then
@@ -162,9 +170,10 @@ func (n *FsOutNode) Execute(ctx context.Context, input nodestore.MessageInterfac
 	}
 
 	fsys, dir, err := nodebase.OpenFs(n.config.Location, &nodebase.FsCredentials{
-		Password: n.config.Password,
-		KeyFile:  n.config.KeyFile,
-		HostKey:  n.config.HostKey,
+		Password:         n.config.Password,
+		KeyFile:          n.config.KeyFile,
+		HostKey:          n.config.HostKey,
+		AcceptAnyHostKey: n.config.AcceptAnyHostKey,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("fsOut: %w", err)
@@ -244,6 +253,13 @@ func (n *FsOutNode) Validate() error {
 	}
 	if strings.TrimSpace(n.config.Location) == "" {
 		return fmt.Errorf("fsOut requires a location")
+	}
+	// See fsIn: a userinfo password in the locator URI would leak
+	// into the exported flow document.
+	if u, err := url.Parse(n.config.Location); err == nil && u.User != nil {
+		if _, hasPw := u.User.Password(); hasPw {
+			return fmt.Errorf("fsOut: password in the locator URI is not allowed — use the credential \"password\" field")
+		}
 	}
 	switch n.config.OverwriteFile {
 	case "", "true", "false", "delete":

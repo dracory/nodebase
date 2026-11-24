@@ -9,11 +9,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/dracory/nodebase"
+	nodestore "github.com/dracory/nodestore"
 	"mime"
 	"net"
 	"net/smtp"
-	nodestore "github.com/dracory/nodestore"
-	"github.com/dracory/nodebase"
 	"strconv"
 	"strings"
 	"time"
@@ -350,11 +350,15 @@ func smtpSend(host string, port int, security, username, password, from string, 
 	}
 	defer c.Close()
 
+	// starttls fails closed: a server that does not advertise the
+	// extension must never receive credentials over cleartext
+	// (STARTTLS-stripping MITM). Plaintext is opt-in via "plain".
 	if security == "starttls" || security == "" {
-		if ok, _ := c.Extension("STARTTLS"); ok {
-			if err := c.StartTLS(&tls.Config{ServerName: host}); err != nil {
-				return fmt.Errorf("mailOut STARTTLS failed: %w", err)
-			}
+		if ok, _ := c.Extension("STARTTLS"); !ok {
+			return fmt.Errorf("mailOut: %s does not advertise STARTTLS (use security \"plain\" to send anyway)", addr)
+		}
+		if err := c.StartTLS(&tls.Config{ServerName: host}); err != nil {
+			return fmt.Errorf("mailOut STARTTLS failed: %w", err)
 		}
 	}
 

@@ -82,8 +82,14 @@ func openSFTPFs(u *url.URL, creds *FsCredentials) (Fs, error) {
 			return fmt.Errorf("sftp: host key mismatch (got %s %s)", key.Type(), base64.StdEncoding.EncodeToString(key.Marshal()))
 		}
 	} else {
-		logRemoteWarn("sftp host %s: no hostKey pinned; accepting any host key (insecure)", host)
-		hostKeyCb = ssh.InsecureIgnoreHostKey() //nolint:gosec — documented opt-out, warning logged
+		// Fail closed: accepting any host key is a MITM opening
+		// (password/key auth runs inside the tunnel), so it must be
+		// an explicit opt-out, not the silent default.
+		if !creds.AcceptAnyHostKey {
+			return nil, fmt.Errorf("sftp: no hostKey pinned for %s — set hostKey (authorized_keys or base64) or acceptAnyHostKey=true to connect anyway", host)
+		}
+		logRemoteWarn("sftp host %s: acceptAnyHostKey set; accepting any host key (insecure)", host)
+		hostKeyCb = ssh.InsecureIgnoreHostKey() //nolint:gosec — explicit user opt-out
 	}
 
 	cfg := &ssh.ClientConfig{

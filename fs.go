@@ -2,12 +2,12 @@ package nodebase
 
 import (
 	"fmt"
+	nodestore "github.com/dracory/nodestore"
 	"log"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
-	nodestore "github.com/dracory/nodestore"
 	"strings"
 	"sync"
 	"time"
@@ -91,9 +91,12 @@ type FsCredentials struct {
 	// optional passphrase rides in Password.
 	KeyFile string
 	// HostKey pins the expected SSH host public key — authorized_keys
-	// line or base64 wire format. Empty accepts any host key
-	// (insecure; a warning is logged). ftp ignores it.
+	// line or base64 wire format. ftp ignores it.
 	HostKey string
+	// AcceptAnyHostKey disables SSH host-key verification when
+	// HostKey is empty (INSECURE — explicit opt-out required; sftp
+	// otherwise refuses to connect without a pinned key).
+	AcceptAnyHostKey bool
 }
 
 // ParseFsLocator splits a locator into (scheme, dir). A plain path or
@@ -187,6 +190,12 @@ func FsCredentialsFromData(data map[string]interface{}) *FsCredentials {
 	creds.Password = get("password")
 	creds.KeyFile = get("keyFile")
 	creds.HostKey = get("hostKey")
+	switch v := data["acceptAnyHostKey"].(type) {
+	case bool:
+		creds.AcceptAnyHostKey = v
+	case string:
+		creds.AcceptAnyHostKey = strings.EqualFold(strings.TrimSpace(v), "true")
+	}
 	return creds
 }
 

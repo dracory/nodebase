@@ -7,10 +7,11 @@ import (
 	_ "embed"
 	"encoding/xml"
 	"fmt"
-	nodestore "github.com/dracory/nodestore"
-	"github.com/dracory/nodebase"
 	"sort"
 	"strings"
+
+	"github.com/dracory/nodebase"
+	nodestore "github.com/dracory/nodestore"
 )
 
 //go:embed editor.html

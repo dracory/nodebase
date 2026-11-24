@@ -6,8 +6,8 @@ package trigger
 import (
 	"testing"
 
-	nodestore "github.com/dracory/nodestore"
 	"github.com/dracory/nodebase"
+	nodestore "github.com/dracory/nodestore"
 )
 
 // TestTriggerNodeConfigDecode verifies the executor is built from node

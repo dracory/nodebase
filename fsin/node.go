@@ -5,9 +5,10 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
-	"path"
-	nodestore "github.com/dracory/nodestore"
 	"github.com/dracory/nodebase"
+	nodestore "github.com/dracory/nodestore"
+	"net/url"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -89,7 +90,13 @@ var schema = map[string]interface{}{
 		"hostKey": map[string]interface{}{
 			"type":        "string",
 			"title":       "Host Key",
-			"description": "sftp locators: expected host public key (authorized_keys or base64); empty accepts any key (insecure)",
+			"description": "sftp locators: expected host public key (authorized_keys or base64); required unless acceptAnyHostKey is set",
+		},
+		"acceptAnyHostKey": map[string]interface{}{
+			"type":        "boolean",
+			"title":       "Accept Any Host Key",
+			"description": "sftp locators: skip host-key verification (INSECURE — vulnerable to MITM; prefer pinning hostKey)",
+			"default":     false,
 		},
 	},
 	"required": []string{"location"},
@@ -114,9 +121,10 @@ type FsInConfig struct {
 	Pattern string `json:"pattern"`
 	// Credentials for remote locators (see FsCredentials). Password
 	// is credential-typed.
-	Password string `json:"password"`
-	KeyFile  string `json:"keyFile"`
-	HostKey  string `json:"hostKey"`
+	Password         string `json:"password"`
+	KeyFile          string `json:"keyFile"`
+	HostKey          string `json:"hostKey"`
+	AcceptAnyHostKey bool   `json:"acceptAnyHostKey"`
 }
 
 // fsSeenEntry fingerprints one polled file so unchanged files are not
@@ -180,9 +188,10 @@ func (n *FsInNode) Execute(ctx context.Context, input nodestore.MessageInterface
 
 func (n *FsInNode) credentials() *nodebase.FsCredentials {
 	return &nodebase.FsCredentials{
-		Password: n.config.Password,
-		KeyFile:  n.config.KeyFile,
-		HostKey:  n.config.HostKey,
+		Password:         n.config.Password,
+		KeyFile:          n.config.KeyFile,
+		HostKey:          n.config.HostKey,
+		AcceptAnyHostKey: n.config.AcceptAnyHostKey,
 	}
 }
 
@@ -311,6 +320,15 @@ func (n *FsInNode) Validate() error {
 	}
 	if strings.TrimSpace(n.config.Location) == "" {
 		return fmt.Errorf("fsIn requires a location")
+	}
+	// A userinfo password in the locator URI lives in the flow
+	// document as plain config — outside the credential-sentinel
+	// model — and would leak into exports. Reject it in flows;
+	// OpenFs keeps accepting it for direct tooling use.
+	if u, err := url.Parse(n.config.Location); err == nil && u.User != nil {
+		if _, hasPw := u.User.Password(); hasPw {
+			return fmt.Errorf("fsIn: password in the locator URI is not allowed — use the credential \"password\" field")
+		}
 	}
 	switch n.config.Format {
 	case "", "utf8", "binary", "path":

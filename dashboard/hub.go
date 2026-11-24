@@ -8,8 +8,8 @@ import (
 	"sort"
 	"sync"
 
-	nodestore "github.com/dracory/nodestore"
 	"github.com/dracory/nodebase"
+	nodestore "github.com/dracory/nodestore"
 
 	"github.com/coder/websocket"
 )
@@ -19,7 +19,7 @@ import (
 // (late-join replay).
 type Manifest struct {
 	Workflow string                            `json:"workflow"`
-	Widgets  []nodebase.UIWidgetManifest          `json:"widgets"`
+	Widgets  []nodebase.UIWidgetManifest       `json:"widgets"`
 	State    map[string]map[string]interface{} `json:"state"`
 }
 
@@ -67,10 +67,11 @@ type scope struct {
 // host without an observer seam still serves dashboards for running
 // flows.
 type Hub struct {
-	host   nodebase.NodeHost
-	auth   func(r *http.Request) (string, bool)
-	mux    *http.ServeMux
-	unbind func()
+	host           nodebase.NodeHost
+	auth           func(r *http.Request) (string, bool)
+	allowedOrigins []string
+	mux            *http.ServeMux
+	unbind         func()
 
 	mu     sync.Mutex
 	scopes map[string]*scope

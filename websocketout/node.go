@@ -8,8 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"github.com/coder/websocket"
-	nodestore "github.com/dracory/nodestore"
 	"github.com/dracory/nodebase"
+	nodestore "github.com/dracory/nodestore"
 )
 
 //go:embed editor.html

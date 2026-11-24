@@ -3,8 +3,8 @@ package queue
 
 import (
 	_ "embed"
-	nodestore "github.com/dracory/nodestore"
 	"github.com/dracory/nodebase"
+	nodestore "github.com/dracory/nodestore"
 )
 
 //go:embed editor.html

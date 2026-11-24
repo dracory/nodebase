@@ -15,8 +15,8 @@ import (
 
 	gofpdf "github.com/jung-kurt/gofpdf/v2"
 
-	nodestore "github.com/dracory/nodestore"
 	"github.com/dracory/nodebase"
+	nodestore "github.com/dracory/nodestore"
 )
 
 //go:embed editor.html

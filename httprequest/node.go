@@ -7,12 +7,12 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"github.com/dracory/nodebase"
+	nodestore "github.com/dracory/nodestore"
 	"io"
 	"mime"
 	"net/http"
 	"net/url"
-	nodestore "github.com/dracory/nodestore"
-	"github.com/dracory/nodebase"
 	"strings"
 	"time"
 )
@@ -20,12 +20,16 @@ import (
 //go:embed editor.html
 var editorHTML string
 
+// maxResponseBodyBytes caps how much of a response body is read into
+// memory (50 MiB) — see the io.LimitReader read in Execute.
+const maxResponseBodyBytes = 50 << 20
+
 func factory(n nodestore.NodeInterface, e nodebase.NodeHost) (nodebase.NodeExecutor, error) {
 	c := new(HTTPRequestConfig)
 	if err := nodebase.DecodeConfig(n, c); err != nil {
 		return nil, err
 	}
-	return NewHTTPRequest(n, c), nil
+	return NewHTTPRequest(n, c, e), nil
 }
 
 // init registers the httpRequest node with the core set.
@@ -107,13 +111,15 @@ type HTTPRequestConfig struct {
 type HTTPRequest struct {
 	*nodebase.BaseNode
 	config *HTTPRequestConfig
+	host   nodebase.NodeHost
 }
 
 // NewHTTPRequest creates a new HTTP request node
-func NewHTTPRequest(node nodestore.NodeInterface, config *HTTPRequestConfig) *HTTPRequest {
+func NewHTTPRequest(node nodestore.NodeInterface, config *HTTPRequestConfig, host nodebase.NodeHost) *HTTPRequest {
 	return &HTTPRequest{
 		BaseNode: nodebase.NewBaseNode(node),
 		config:   config,
+		host:     host,
 	}
 }
 
@@ -139,6 +145,12 @@ func (n *HTTPRequest) Execute(ctx context.Context, input nodestore.MessageInterf
 	parsedURL, err := url.Parse(rawURL)
 	if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
 		return nil, fmt.Errorf("unsupported URL %q: only http:// and https:// targets are allowed", rawURL)
+	}
+	// Optional host SSRF policy: hosts embedding nodebase can veto
+	// outbound targets (internal ranges, metadata endpoints) by
+	// implementing OutboundURLAllowed. Absent = allow (v1 default).
+	if p, ok := n.host.(interface{ OutboundURLAllowed(rawURL string) bool }); ok && !p.OutboundURLAllowed(parsedURL.String()) {
+		return nil, fmt.Errorf("URL %q rejected by the host outbound policy", rawURL)
 	}
 
 	// Parse method from config or input, default to GET
@@ -227,6 +239,11 @@ func (n *HTTPRequest) Execute(ctx context.Context, input nodestore.MessageInterf
 			if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
 				return fmt.Errorf("redirect to unsupported scheme %q refused", req.URL.Scheme)
 			}
+			// Redirects re-check the host policy — a permitted URL must
+			// not bounce the request to a denied target.
+			if p, ok := n.host.(interface{ OutboundURLAllowed(rawURL string) bool }); ok && !p.OutboundURLAllowed(req.URL.String()) {
+				return fmt.Errorf("redirect to %q rejected by the host outbound policy", req.URL.Host)
+			}
 			if len(via) >= 10 {
 				return fmt.Errorf("stopped after 10 redirects")
 			}
@@ -241,10 +258,17 @@ func (n *HTTPRequest) Execute(ctx context.Context, input nodestore.MessageInterf
 	}
 	defer resp.Body.Close()
 
-	// Read response body
-	respBody, err := io.ReadAll(resp.Body)
+	// Read response body, capped: an upstream can stream unbounded
+	// data otherwise and a fast steady stream can exhaust memory
+	// well inside the 30s client timeout. The payload reports
+	// truncation via "bodyTruncated".
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+	truncated := int64(len(respBody)) > maxResponseBodyBytes
+	if truncated {
+		respBody = respBody[:maxResponseBodyBytes]
 	}
 
 	// Parse response body if it's JSON. The media type must be parsed —
@@ -265,11 +289,12 @@ func (n *HTTPRequest) Execute(ctx context.Context, input nodestore.MessageInterf
 
 	// Create response payload
 	response := map[string]interface{}{
-		"statusCode": resp.StatusCode,
-		"status":     resp.Status,
-		"headers":    resp.Header,
-		"body":       responseData,
-		"duration":   time.Since(startTime).Milliseconds(),
+		"statusCode":    resp.StatusCode,
+		"bodyTruncated": truncated,
+		"status":        resp.Status,
+		"headers":       resp.Header,
+		"body":          responseData,
+		"duration":      time.Since(startTime).Milliseconds(),
 	}
 
 	// Return the response as the output payload

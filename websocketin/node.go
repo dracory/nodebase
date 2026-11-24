@@ -6,12 +6,13 @@ import (
 	_ "embed"
 	"fmt"
 	"github.com/coder/websocket"
+	"github.com/dracory/nodebase"
+	nodestore "github.com/dracory/nodestore"
 	"net"
 	"net/http"
-	nodestore "github.com/dracory/nodestore"
-	"github.com/dracory/nodebase"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -59,6 +60,12 @@ var schema = map[string]interface{}{
 			"description": "The node's own listen port",
 			"default":     8082,
 		},
+		"allowedOrigins": map[string]interface{}{
+			"type":        "string",
+			"title":       "Allowed Origins",
+			"description": "Comma-separated Origin host patterns allowed to connect (e.g. \"example.com,*.example.com\"). Empty accepts any origin — cross-site websocket hijacking exposure; set this on browser-facing flows",
+			"default":     "",
+		},
 	},
 }
 
@@ -70,6 +77,11 @@ type WebSocketInConfig struct {
 	// httpTrigger the node binds its own listener rather than sharing
 	// the admin mux, which flowrunner has no reference to.
 	Port int `json:"port"`
+	// AllowedOrigins is a comma-separated list of Origin host
+	// patterns passed to websocket.Accept. Empty keeps the legacy
+	// any-origin behaviour (Node-RED parity, but a CSWSH exposure —
+	// set it whenever browsers on foreign origins must not connect).
+	AllowedOrigins string `json:"allowedOrigins"`
 }
 
 // WebSocketInNode runs its own HTTP server that upgrades connections on
@@ -122,20 +134,32 @@ func (n *WebSocketInNode) Execute(ctx context.Context, input nodestore.MessageIn
 	return nodestore.NewMessage().SetPayload(map[string]interface{}{"status": "listening", "port": port, "path": path}).SetTimestamp(time.Now()), nil
 }
 
+// acceptOptions builds the websocket.Accept options from config: an
+// origin allowlist when configured, else the legacy any-origin mode.
+func (n *WebSocketInNode) acceptOptions() *websocket.AcceptOptions {
+	var patterns []string
+	for _, p := range strings.Split(n.config.AllowedOrigins, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			patterns = append(patterns, p)
+		}
+	}
+	if len(patterns) > 0 {
+		return &websocket.AcceptOptions{OriginPatterns: patterns}
+	}
+	// Flows may serve browsers on any origin; the editor is not
+	// necessarily same-origin with this node's own listener.
+	return &websocket.AcceptOptions{InsecureSkipVerify: true} //nolint:gosec — legacy default; set allowedOrigins to restrict
+}
+
 // handleUpgrade accepts the websocket upgrade, registers the session
 // and runs the read loop until the peer disconnects.
 func (n *WebSocketInNode) handleUpgrade(w http.ResponseWriter, r *http.Request) {
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		// Flows may serve browsers on any origin; the editor is not
-		// necessarily same-origin with this node's own listener.
-		InsecureSkipVerify: true,
-	})
+	conn, err := websocket.Accept(w, r, n.acceptOptions())
 	if err != nil {
 		return // Accept already wrote an error response
 	}
 
-	n.seq++
-	sessionID := fmt.Sprintf("ws-%d", n.seq)
+	sessionID := fmt.Sprintf("ws-%d", atomic.AddInt64(&n.seq, 1))
 	n.sess.Put(sessionID, conn)
 	defer func() {
 		n.sess.DeleteIf(sessionID, conn)

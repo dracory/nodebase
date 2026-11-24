@@ -54,8 +54,8 @@ import (
 	"net/http"
 	"time"
 
-	nodestore "github.com/dracory/nodestore"
 	"github.com/dracory/nodebase"
+	nodestore "github.com/dracory/nodestore"
 
 	"github.com/coder/websocket"
 )
@@ -71,6 +71,12 @@ type Options struct {
 	// falls back to the host's HTTPAuthFunc. When both are nil the
 	// dashboard is unauthenticated.
 	Authenticator func(r *http.Request) (username string, ok bool)
+
+	// AllowedOrigins restricts websocket upgrade Origin hosts
+	// (websocket.Accept OriginPatterns, e.g. []string{"example.com",
+	// "*.example.com"}). Empty keeps the legacy any-origin behaviour
+	// (CSWSH exposure — set it on internet-facing deployments).
+	AllowedOrigins []string
 }
 
 // New returns a *Hub serving the websocket bridge at <mount>/ws and
@@ -95,10 +101,11 @@ func New(opts Options) (*Hub, error) {
 		auth = opts.Host.HTTPAuthFunc()
 	}
 	h := &Hub{
-		host:   opts.Host,
-		auth:   auth,
-		scopes: map[string]*scope{},
-		mux:    http.NewServeMux(),
+		host:           opts.Host,
+		auth:           auth,
+		allowedOrigins: opts.AllowedOrigins,
+		scopes:         map[string]*scope{},
+		mux:            http.NewServeMux(),
 	}
 	h.mux.HandleFunc("GET /ws", h.ws)
 	h.mux.HandleFunc("GET /manifest", h.manifest)
@@ -111,6 +118,10 @@ func New(opts Options) (*Hub, error) {
 // ServeHTTP authenticates then routes to the ws or manifest handler.
 // Paths are relative to the mount point (see New).
 func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Baseline hardening headers on every dashboard response.
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Referrer-Policy", "no-referrer")
 	if h.auth != nil {
 		if _, ok := h.auth(r); !ok {
 			w.Header().Set("WWW-Authenticate", `Basic realm="goflow"`)
@@ -157,11 +168,15 @@ func (h *Hub) ws(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+	accept := &websocket.AcceptOptions{}
+	if len(h.allowedOrigins) > 0 {
+		accept.OriginPatterns = h.allowedOrigins
+	} else {
 		// The dashboard page is same-origin, but flows may embed the
-		// socket elsewhere; same policy as websocketIn.
-		InsecureSkipVerify: true,
-	})
+		// socket elsewhere; same legacy default as websocketIn.
+		accept.InsecureSkipVerify = true //nolint:gosec — set Options.AllowedOrigins to restrict
+	}
+	conn, err := websocket.Accept(w, r, accept)
 	if err != nil {
 		return
 	}

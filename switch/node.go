@@ -5,8 +5,8 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
-	nodestore "github.com/dracory/nodestore"
 	"github.com/dracory/nodebase"
+	nodestore "github.com/dracory/nodestore"
 	"regexp"
 	"strings"
 )
@@ -82,7 +82,7 @@ var schema = map[string]interface{}{
 // SwitchConfig holds configuration for the switch node
 type SwitchConfig struct {
 	Rules []nodebase.SwitchRule `json:"rules"`
-	Mode  string             `json:"mode"` // first | all (default "first")
+	Mode  string                `json:"mode"` // first | all (default "first")
 	// Otherwise adds a dedicated port after the last rule output; a
 	// message matching no rule is routed there (Node-RED "otherwise").
 	Otherwise bool `json:"otherwise"`

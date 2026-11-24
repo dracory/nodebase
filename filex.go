@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	nodestore "github.com/dracory/nodestore"
+	"path/filepath"
 	"strings"
 )
 
@@ -32,6 +32,18 @@ func ResolveFilePath(root, name string) (string, error) {
 	pathAbs, err := filepath.Abs(name)
 	if err != nil {
 		return "", fmt.Errorf("invalid filename %q: %w", name, err)
+	}
+	// Resolve symlinks before the containment check: a symlink inside
+	// the root pointing outside must not be a clean escape (CWE-59).
+	// EvalSymlinks fails when the target does not exist yet (create
+	// mode), so fall back to the parent directory's resolution.
+	if resolved, err := filepath.EvalSymlinks(rootAbs); err == nil {
+		rootAbs = resolved
+	}
+	if resolved, err := filepath.EvalSymlinks(pathAbs); err == nil {
+		pathAbs = resolved
+	} else if resolved, err := filepath.EvalSymlinks(filepath.Dir(pathAbs)); err == nil {
+		pathAbs = filepath.Join(resolved, filepath.Base(pathAbs))
 	}
 	rel, err := filepath.Rel(rootAbs, pathAbs)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
