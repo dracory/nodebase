@@ -114,8 +114,14 @@ type HTTPRequest struct {
 	host   nodebase.NodeHost
 }
 
-// NewHTTPRequest creates a new HTTP request node
-func NewHTTPRequest(node nodestore.NodeInterface, config *HTTPRequestConfig, host nodebase.NodeHost) *HTTPRequest {
+// NewHTTPRequest creates a new HTTP request node. host is variadic
+// for backward compatibility (older callers passed none); supply the
+// NodeHost so the optional OutboundURLAllowed policy is honoured.
+func NewHTTPRequest(node nodestore.NodeInterface, config *HTTPRequestConfig, hosts ...nodebase.NodeHost) *HTTPRequest {
+	var host nodebase.NodeHost
+	if len(hosts) > 0 {
+		host = hosts[0]
+	}
 	return &HTTPRequest{
 		BaseNode: nodebase.NewBaseNode(node),
 		config:   config,
