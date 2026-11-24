@@ -20,7 +20,7 @@ type fakeQueue struct {
 	enqueueErr error
 }
 
-func (q *fakeQueue) Arm(ctx context.Context)                    { q.armed = true }
+func (q *fakeQueue) Arm(ctx context.Context) { q.armed = true }
 func (q *fakeQueue) Enqueue(p nodestore.MessageInterface) error {
 	if q.enqueueErr != nil {
 		return q.enqueueErr

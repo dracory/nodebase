@@ -41,13 +41,13 @@ func (h *stubHost) NodeEnv(wf, nodeID, name string) (interface{}, bool) {
 	v, ok := h.env[name]
 	return v, ok
 }
-func (h *stubHost) ResolvedContextStore() ContextStore                        { return nil }
-func (h *stubHost) LoadTLSConfig(wf, ref string) (*tls.Config, error)         { return nil, nil }
-func (h *stubHost) FileRootPath() string                                      { return "" }
-func (h *stubHost) ExecAllowed() bool                                         { return false }
-func (h *stubHost) SharedHTTPRouter() HTTPRouter                              { return nil }
-func (h *stubHost) HTTPAuthFunc() func(r *http.Request) (string, bool)        { return nil }
-func (h *stubHost) QueueService() QueueService                                { return nil }
+func (h *stubHost) ResolvedContextStore() ContextStore                 { return nil }
+func (h *stubHost) LoadTLSConfig(wf, ref string) (*tls.Config, error)  { return nil, nil }
+func (h *stubHost) FileRootPath() string                               { return "" }
+func (h *stubHost) ExecAllowed() bool                                  { return false }
+func (h *stubHost) SharedHTTPRouter() HTTPRouter                       { return nil }
+func (h *stubHost) HTTPAuthFunc() func(r *http.Request) (string, bool) { return nil }
+func (h *stubHost) QueueService() QueueService                         { return nil }
 
 func TestTCPPayloadBytes(t *testing.T) {
 	if _, err := TCPPayloadBytes(nil); err == nil {

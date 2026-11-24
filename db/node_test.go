@@ -17,8 +17,8 @@ import (
 
 // fakeHost supplies the node-state slot the pool lives in.
 type fakeHost struct {
-	state  map[string]interface{}
-	env    map[string]interface{}
+	state map[string]interface{}
+	env   map[string]interface{}
 }
 
 func newFakeHost() *fakeHost { return &fakeHost{state: map[string]interface{}{}} }
