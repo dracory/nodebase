@@ -1,0 +1,423 @@
+// Package httptrigger contains the httpTrigger node implementation.
+package httptrigger
+
+import (
+	"context"
+	_ "embed"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	nodestore "github.com/dracory/nodestore"
+	"github.com/dracory/nodebase"
+	"strings"
+	"sync"
+	"time"
+)
+
+//go:embed editor.html
+var editorHTML string
+
+func factory(n nodestore.NodeInterface, e nodebase.NodeHost) (nodebase.NodeExecutor, error) {
+	c := new(HTTPTriggerConfig)
+	if err := nodebase.DecodeConfig(n, c); err != nil {
+		return nil, err
+	}
+	return NewHTTPTrigger(n, c, e), nil
+}
+
+// init registers the httpTrigger node with the core set.
+func init() {
+	nodebase.MustRegisterNode(nodebase.NodeRegistration{
+		Descriptor: nodebase.NodeDescriptor{
+			Type:        "httpTrigger",
+			Name:        "HTTP Trigger",
+			Description: "Starts a workflow with an HTTP request",
+			Icon:        "bolt",
+			Category:    "Triggers",
+			Set:         "core",
+			Schema:      schema,
+			EditorHTML:  editorHTML,
+		},
+		Factory: factory,
+	})
+}
+
+// schema is the JSON schema the editor serves for the httpTrigger node.
+var schema = map[string]interface{}{
+	"type": "object",
+	"properties": map[string]interface{}{
+		"method": map[string]interface{}{
+			"type":    "string",
+			"enum":    []string{"GET", "POST", "PUT", "DELETE"},
+			"default": "GET",
+		},
+		"listener": map[string]interface{}{
+			"type":    "string",
+			"title":   "Listener",
+			"enum":    []string{"own", "main"},
+			"default": "own",
+			"description": "own: bind a private listener on Port. main: serve Path on the admin " +
+				"server's port (Node-RED style) — behind admin auth when configured; Port is ignored",
+		},
+		"path": map[string]interface{}{
+			"type":        "string",
+			"default":     "/trigger",
+			"description": "URL path (\":\" segments become route params). listener \"main\": avoid /api, /editor, /dashboard and other admin prefixes — they are reserved",
+		},
+		"port": map[string]interface{}{
+			"type":        "integer",
+			"default":     8081,
+			"description": "Port for the own listener (must differ from the admin port; ignored when listener is \"main\")",
+		},
+		"responseTimeout": map[string]interface{}{
+			"type":        "number",
+			"title":       "Response Timeout (s)",
+			"description": "Seconds to wait for a downstream httpResponse before a 504 (0 = 15s default)",
+			"default":     0,
+		},
+	},
+	"required": []string{"path"},
+}
+
+// HTTPTriggerConfig holds configuration for the HTTP trigger node
+type HTTPTriggerConfig struct {
+	Method string `json:"method"`
+	Path   string `json:"path"`
+	Port   int    `json:"port"`
+	// Listener selects where the route is served: "own" (default)
+	// binds a private TCP listener on Port; "main" mounts the route
+	// on the host's shared HTTP server via host.SharedHTTPRouter() — the
+	// Node-RED model (declare a path, serve on the admin port,
+	// behind the admin middleware).
+	Listener string `json:"listener"`
+	// ResponseTimeout is how many seconds a request waits for a
+	// downstream httpResponse before a 504 is returned
+	// (0 = defaultResponseTimeout).
+	ResponseTimeout float64 `json:"responseTimeout"`
+}
+
+// HTTPTrigger is a node that triggers a workflow via HTTP.
+// Each incoming request is injected into the running workflow as a
+// payload; the request is answered by a downstream httpResponse node,
+// or with a 504 error if the flow produces no response in time.
+type HTTPTrigger struct {
+	*nodebase.BaseNode
+	config     *HTTPTriggerConfig
+	serverMu   sync.Mutex
+	server     *http.Server
+	host       nodebase.NodeHost
+	workflowID string
+	// params lists the ":name" route parameters converted into
+	// ServeMux "{name}" wildcards — extracted per request into
+	// Data["params"].
+	params []string
+	// mounted is the method-qualified pattern mounted on the shared
+	// router in listener "main" mode ("" = not mounted); router is
+	// the router it was mounted on, captured so Stop unregisters on
+	// the same instance even if the host field is swapped.
+	mounted string
+	router  nodebase.HTTPRouter
+}
+
+// defaultResponseTimeout is how long a trigger waits for the flow to
+// produce an httpResponse before falling back to a 504 (Node-RED waits
+// indefinitely; the finite default is a deliberate deviation).
+const defaultResponseTimeout = 15 * time.Second
+
+// maxTriggerBodyBytes caps request bodies decoded by the trigger
+// (Node-RED's body-parser default is ~100kb; 1 MiB leaves headroom).
+const maxTriggerBodyBytes = 1 << 20
+
+// NewHTTPTrigger creates a new HTTP trigger node
+func NewHTTPTrigger(node nodestore.NodeInterface, config *HTTPTriggerConfig, host nodebase.NodeHost) *HTTPTrigger {
+	return &HTTPTrigger{
+		BaseNode:   nodebase.NewBaseNode(node),
+		config:     config,
+		host:       host,
+		workflowID: node.GetWorkflowID(),
+	}
+}
+
+// Execute starts the HTTP server to listen for incoming requests
+func (n *HTTPTrigger) Execute(ctx context.Context, input nodestore.MessageInterface) (nodestore.MessageInterface, error) {
+	// Everything fallible or panicky runs before the lock so the
+	// serverMu critical section is a single check-and-assign with no
+	// way to leak it.
+	if err := n.Validate(); err != nil {
+		return nil, err
+	}
+
+	n.serverMu.Lock()
+	running := n.server != nil || n.mounted != ""
+	n.serverMu.Unlock()
+	if running {
+		return nil, fmt.Errorf("HTTP server already running")
+	}
+
+	// Validate already rejected bad patterns; the values of ":name"
+	// route parameters land in Data["params"].
+	pattern, params := n.routePattern()
+
+	if n.config.Listener == "main" {
+		return n.mountShared(pattern, params)
+	}
+
+	handler := http.NewServeMux()
+	handler.HandleFunc(pattern, n.handleRequest)
+
+	port := n.config.Port
+	if port <= 0 {
+		port = 8081 // must not collide with the admin server on :8080
+	}
+
+	// Bind synchronously so a port conflict surfaces as a node error
+	// instead of a console message after the run has "succeeded"
+	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		return nil, fmt.Errorf("cannot bind trigger listener on :%d: %w", port, err)
+	}
+
+	n.serverMu.Lock()
+	defer n.serverMu.Unlock()
+	if n.server != nil {
+		listener.Close()
+		return nil, fmt.Errorf("HTTP server already running")
+	}
+	n.params = params
+	n.server = &http.Server{
+		Addr:    fmt.Sprintf(":%d", port),
+		Handler: handler,
+		// DoS guards: a request can stall a flow for up to
+		// responseTimeout, so WriteTimeout covers that plus slack.
+		ReadHeaderTimeout: nodebase.ReadHeaderTimeout,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      n.responseTimeout() + 15*time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
+
+	// Capture the server locally — Stop may nil n.server before this
+	// goroutine evaluates it, which would panic on the dereference.
+	srv := n.server
+	go func() {
+		if err := srv.Serve(listener); err != nil && err != http.ErrServerClosed {
+			fmt.Printf("HTTP server error: %v\n", err)
+		}
+	}()
+
+	// Return initial payload
+	return nodestore.NewMessage().SetPayload(map[string]interface{}{"status": "listening"}).SetTimestamp(time.Now()), nil
+}
+
+// mountShared registers the trigger's route on the host's shared
+// HTTPRouter (listener "main") instead of binding a private port.
+// The pattern is method-qualified so the shared mux enforces the
+// method (405 on mismatch), matching the own listener's manual check.
+// A route conflict is an activation error — the second registrant's
+// deploy fails, exactly like a port bind conflict in "own" mode.
+func (n *HTTPTrigger) mountShared(pattern string, params []string) (nodestore.MessageInterface, error) {
+	if n.host == nil || n.host.SharedHTTPRouter() == nil {
+		return nil, fmt.Errorf("listener \"main\" requires a shared HTTP router on the host (host.SharedHTTPRouter()) — none is installed")
+	}
+	full := n.config.Method + " " + pattern
+	if err := n.host.SharedHTTPRouter().Handle(full, http.HandlerFunc(n.handleRequest)); err != nil {
+		return nil, fmt.Errorf("cannot mount trigger route %q on the shared listener: %w", full, err)
+	}
+	n.serverMu.Lock()
+	defer n.serverMu.Unlock()
+	if n.mounted != "" {
+		n.host.SharedHTTPRouter().Unregister(full)
+		return nil, fmt.Errorf("HTTP trigger already mounted")
+	}
+	n.params = params
+	n.router = n.host.SharedHTTPRouter()
+	n.mounted = full
+	return nodestore.NewMessage().SetPayload(map[string]interface{}{"status": "listening", "listener": "main"}).SetTimestamp(time.Now()), nil
+}
+
+// handleRequest processes incoming HTTP requests
+func (n *HTTPTrigger) handleRequest(w http.ResponseWriter, r *http.Request) {
+	// Only handle the configured HTTP method
+	if r.Method != n.config.Method {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Parse request body if present — bounded so an unauthenticated
+	// client cannot exhaust memory with an unbounded upload.
+	var requestData map[string]interface{}
+	if r.Body != nil {
+		if r.ContentLength > maxTriggerBodyBytes {
+			http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, maxTriggerBodyBytes)
+		if err := json.NewDecoder(r.Body).Decode(&requestData); err != nil && err != io.EOF {
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) || err.Error() == "http: request body too large" {
+				http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Create workflow payload from request — Data is a request object
+	// (Node-RED msg.payload equivalent) so downstream nodes always have
+	// something to work with, even for bodiless GETs
+	data := map[string]interface{}{
+		"method":  r.Method,
+		"path":    r.URL.Path,
+		"query":   r.URL.Query(),
+		"headers": r.Header,
+		"body":    requestData,
+	}
+	if len(n.params) > 0 {
+		params := make(map[string]string, len(n.params))
+		for _, p := range n.params {
+			params[p] = r.PathValue(p)
+		}
+		data["params"] = params
+	}
+	payload := nodestore.NewMessage().SetPayload(data).SetMetadata(make(map[string]interface{})).SetTimestamp(time.Now())
+
+	// Add request metadata
+	payload.GetMetadata()["method"] = r.Method
+	payload.GetMetadata()["path"] = r.URL.Path
+	payload.GetMetadata()["query"] = r.URL.Query()
+	payload.GetMetadata()["headers"] = r.Header
+	payload.GetMetadata()["remoteAddr"] = r.RemoteAddr
+
+	w.Header().Set("Content-Type", "application/json")
+
+	// Inject the payload into the running workflow; a downstream
+	// httpResponse node answers the request via its message channel
+	msgID, ch, err := n.host.InjectMessage(n.workflowID, n.GetID(), payload)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+
+	select {
+	case response := <-ch:
+		// httpResponse marks up status + headers via message metadata;
+		// Node-RED's msg.statusCode / msg.headers equivalent
+		if headers, ok := response.GetMetadata()["responseHeaders"].(map[string]string); ok {
+			for k, v := range headers {
+				w.Header().Set(k, v)
+			}
+		}
+		statusCode := 200
+		if sc, ok := response.GetMetadata()["statusCode"].(int); ok && sc > 0 {
+			statusCode = sc
+		}
+		w.WriteHeader(statusCode)
+		// Strings go out raw; anything else is JSON-encoded
+		if body, ok := response.GetPayload().(string); ok {
+			w.Write([]byte(body))
+		} else {
+			json.NewEncoder(w).Encode(response.GetPayload())
+		}
+	case <-time.After(n.responseTimeout()):
+		// No httpResponse node in the flow (or the flow stalled)
+		n.host.DiscardPending(msgID)
+		w.WriteHeader(http.StatusGatewayTimeout)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "flow produced no response within the response timeout — is an httpResponse node wired downstream?",
+		})
+	case <-r.Context().Done():
+		n.host.DiscardPending(msgID)
+	}
+}
+
+// responseTimeout returns the configured response wait (default 15s).
+func (n *HTTPTrigger) responseTimeout() time.Duration {
+	if n.config.ResponseTimeout > 0 {
+		return time.Duration(n.config.ResponseTimeout * float64(time.Second))
+	}
+	return defaultResponseTimeout
+}
+
+// Validate checks if the node is properly configured
+func (n *HTTPTrigger) Validate() error {
+	if err := n.BaseNode.Validate(); err != nil {
+		return err
+	}
+
+	if n.config.Path == "" {
+		return fmt.Errorf("path is required")
+	}
+
+	if n.config.Method == "" {
+		n.config.Method = "GET" // Default to GET if not specified
+	}
+
+	switch n.config.Listener {
+	case "", "own", "main":
+	default:
+		return fmt.Errorf("invalid listener %q — expected \"own\" or \"main\"", n.config.Listener)
+	}
+
+	// Reject paths whose mux pattern is invalid (e.g. duplicate ":name"
+	// parameters) — ServeMux.HandleFunc panics on them, which would
+	// otherwise surface as an Execute panic instead of a deploy error.
+	pattern, _ := n.routePattern()
+	var patErr error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				patErr = fmt.Errorf("invalid path %q: %v", n.config.Path, r)
+			}
+		}()
+		probe := http.NewServeMux()
+		probe.HandleFunc(pattern, func(http.ResponseWriter, *http.Request) {})
+	}()
+	return patErr
+}
+
+// routePattern returns the ServeMux pattern and parameter names for the
+// configured path. Execute and Validate share it so the deploy-time
+// check probes exactly the pattern that will be served. net/http
+// patterns must start with a slash; an empty or malformed path would
+// panic in HandleFunc. ":name" segments become Go 1.22 "{name}" wildcards
+// (Node-RED route parameters).
+func (n *HTTPTrigger) routePattern() (string, []string) {
+	path := n.config.Path
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return nodebase.MuxPattern(path)
+}
+
+// Stop shuts down the HTTP server
+func (n *HTTPTrigger) Stop() error {
+	// Take the server under the lock and clear it first — concurrent
+	// Stop calls (StopWorkflow vs a mid-activation cancel) must be
+	// idempotent and never race on n.server.
+	n.serverMu.Lock()
+	srv := n.server
+	n.server = nil
+	mounted := n.mounted
+	n.mounted = ""
+	router := n.router
+	n.router = nil
+	n.serverMu.Unlock()
+	if mounted != "" && router != nil {
+		router.Unregister(mounted)
+	}
+	if srv == nil {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		return fmt.Errorf("error shutting down HTTP server: %w", err)
+	}
+	return nil
+}
