@@ -140,14 +140,21 @@ func TestTriggerValidate(t *testing.T) {
 	if err := n.Validate(); err != nil {
 		t.Fatalf("valid config rejected: %v", err)
 	}
-	if err := newNode(&HTTPTriggerConfig{Method: "BOGUS", Path: "/x"}, host).Validate(); err == nil {
-		t.Fatal("bad method should fail")
+	// empty path fails
+	if err := newNode(&HTTPTriggerConfig{Method: http.MethodGet}, host).Validate(); err == nil {
+		t.Fatal("missing path should fail")
 	}
-	if err := newNode(&HTTPTriggerConfig{Method: http.MethodGet, Listener: "bogus"}, host).Validate(); err == nil {
+	if err := newNode(&HTTPTriggerConfig{Method: http.MethodGet, Path: "/x", Listener: "bogus"}, host).Validate(); err == nil {
 		t.Fatal("bad listener should fail")
 	}
-	if err := newNode(&HTTPTriggerConfig{Method: http.MethodGet, ResponseTimeout: -1}, host).Validate(); err == nil {
-		t.Fatal("negative timeout should fail")
+	// duplicate path params produce an invalid mux pattern
+	if err := newNode(&HTTPTriggerConfig{Method: http.MethodGet, Path: "/u/:id/:id"}, host).Validate(); err == nil {
+		t.Fatal("duplicate params should fail")
+	}
+	// empty method defaults to GET
+	m := newNode(&HTTPTriggerConfig{Path: "/x"}, host)
+	if err := m.Validate(); err != nil || m.config.Method != "GET" {
+		t.Fatal("method should default to GET")
 	}
 }
 

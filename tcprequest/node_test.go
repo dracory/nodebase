@@ -8,11 +8,9 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/dracory/nodebase"
 	nodestore "github.com/dracory/nodestore"
@@ -87,7 +85,8 @@ func echoServer(t *testing.T, handle func(net.Conn)) int {
 func TestTCPRequestTimeoutMode(t *testing.T) {
 	port := echoServer(t, func(conn net.Conn) {
 		defer conn.Close()
-		io.ReadAll(io.LimitReader(conn, 1024))
+		buf := make([]byte, 64)
+		conn.Read(buf) // drain the request first so close isn't a RST
 		conn.Write([]byte("reply-data"))
 	})
 	n := newNode(&TCPRequestConfig{Host: "127.0.0.1", Port: port, Timeout: 2}, &fakeHost{})
@@ -140,6 +139,8 @@ func TestTCPRequestLengthMode(t *testing.T) {
 func TestTCPRequestBufferRet(t *testing.T) {
 	port := echoServer(t, func(conn net.Conn) {
 		defer conn.Close()
+		buf := make([]byte, 64)
+		conn.Read(buf) // drain the request first so close isn't a RST
 		conn.Write([]byte{0xDE, 0xAD})
 	})
 	n := newNode(&TCPRequestConfig{Host: "127.0.0.1", Port: port, Ret: "buffer", Timeout: 2}, &fakeHost{})
