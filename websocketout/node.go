@@ -7,6 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
+	"time"
+
 	"github.com/coder/websocket"
 	"github.com/dracory/nodebase"
 	nodestore "github.com/dracory/nodestore"
@@ -59,8 +62,18 @@ var schema = map[string]interface{}{
 type WebSocketOutConfig struct {
 	// Target selects "session" (write back on the connection named by
 	// the message's sessionId metadata) or "broadcast" (write to every
-	// open session of this workflow's websocketIn nodes).
+	// open session of this workflow's websocketIn nodes). Only used in
+	// legacy mode — a server/client reference overrides it.
 	Target string `json:"target"`
+	// Server references a shared websocketListener config node id
+	// (Node-RED "server"): writes go to the session named by the
+	// message's sessionId metadata, or to every client of the shared
+	// endpoint when no session is named.
+	Server string `json:"server"`
+	// Client references a shared websocketClient config node id
+	// (Node-RED "client"): writes go over the shared outbound
+	// connection. Client wins over Server.
+	Client string `json:"client"`
 }
 
 // WebSocketOutNode writes the message Data to websocket sessions held
@@ -70,6 +83,80 @@ type WebSocketOutNode struct {
 	config     *WebSocketOutConfig
 	host       nodebase.NodeHost
 	workflowID string
+	// listener/client hold the shared-config state in Node-RED
+	// server/client mode; done stops the client dial-retry loop.
+	listener *nodebase.WSListenerState
+	client   *nodebase.WSClientState
+	done     chan struct{}
+	stopOnce sync.Once
+}
+
+// Activate warms the shared config resources at deploy time: a
+// server reference mounts the listener endpoint now (clients must be
+// able to connect before the first message arrives); a client
+// reference starts the dial-retry loop.
+func (n *WebSocketOutNode) Activate(ctx context.Context) error {
+	if n.config.Client != "" {
+		state, _, err := nodebase.ResolveWSClient(n.host, n.workflowID, n.config.Client)
+		if err != nil {
+			return err
+		}
+		state.Attach()
+		n.client = state
+		n.done = make(chan struct{})
+		go n.dialLoop(state)
+		return nil
+	}
+	if n.config.Server != "" {
+		state, _, err := nodebase.ResolveWSListener(n.host, n.workflowID, n.config.Server)
+		if err != nil {
+			return err
+		}
+		if err := state.Attach(n.host); err != nil {
+			return err
+		}
+		n.listener = state
+	}
+	return nil
+}
+
+// dialLoop keeps the shared client connection up until Stop, matching
+// websocketIn's client-mode loop (either side may be the only
+// dependent of the config node).
+func (n *WebSocketOutNode) dialLoop(state *nodebase.WSClientState) {
+	for {
+		select {
+		case <-n.done:
+			return
+		default:
+		}
+		if state.Conn() == nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = state.Connect(ctx)
+			cancel()
+		}
+		select {
+		case <-n.done:
+			return
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
+// Stop releases the shared config resources (idempotent).
+func (n *WebSocketOutNode) Stop() error {
+	n.stopOnce.Do(func() {
+		if n.done != nil {
+			close(n.done)
+		}
+		if n.client != nil {
+			n.client.Release()
+		}
+		if n.listener != nil {
+			n.listener.Release()
+		}
+	})
+	return nil
 }
 
 // Execute writes Data as a text message (binary for []byte) to the
@@ -78,6 +165,54 @@ func (n *WebSocketOutNode) Execute(ctx context.Context, input nodestore.MessageI
 	typ, data, err := wsPayload(input)
 	if err != nil {
 		return nil, err
+	}
+
+	// Executors may be rebuilt between activation and message delivery;
+	// resolve the shared state lazily (Activate holds the attach ref).
+	if n.client == nil && n.config.Client != "" {
+		if state, _, err := nodebase.ResolveWSClient(n.host, n.workflowID, n.config.Client); err == nil {
+			n.client = state
+		}
+	}
+	if n.listener == nil && n.config.Server != "" {
+		if state, _, err := nodebase.ResolveWSListener(n.host, n.workflowID, n.config.Server); err == nil {
+			n.listener = state
+		}
+	}
+
+	// Shared client mode: write over the dialed connection.
+	if n.client != nil {
+		conn := n.client.Conn()
+		if conn == nil {
+			return nil, errors.New("websocketOut client mode: not connected")
+		}
+		if err := conn.Write(ctx, typ, data); err != nil {
+			return nil, fmt.Errorf("websocketOut client write failed: %w", err)
+		}
+		return input, nil
+	}
+
+	// Shared server mode: sessionId metadata selects the client, else
+	// the message broadcasts to every client of the listener. A
+	// deploy-time mount means the endpoint exists but a client may
+	// connect a beat after the first message — wait briefly so the
+	// looped-back client (websocketIn client mode) is not raced.
+	if n.listener != nil {
+		if sessionID, _ := messageSessionID(input); sessionID != "" {
+			if conn, ok := n.listener.Conn(sessionID); ok {
+				if err := conn.Write(ctx, typ, data); err != nil {
+					return nil, fmt.Errorf("websocketOut write to %q failed: %w", sessionID, err)
+				}
+			}
+			return input, nil // named session absent or write done — no broadcast
+		}
+		conns := n.waitForListenerConns(1500 * time.Millisecond)
+		for _, id := range conns {
+			if conn, ok := n.listener.Conn(id); ok {
+				_ = conn.Write(ctx, typ, data) // best-effort fan-out
+			}
+		}
+		return input, nil
 	}
 
 	sessions := n.host.GetOrCreateNodeState(n.workflowID, nodebase.WSSessionsKey, func() interface{} {
@@ -150,6 +285,36 @@ func wsPayload(input nodestore.MessageInterface) (websocket.MessageType, []byte,
 			return 0, nil, fmt.Errorf("websocketOut cannot serialize data: %w", err)
 		}
 		return websocket.MessageText, raw, nil
+	}
+}
+
+// messageSessionID extracts the sessionId metadata websocketIn stamps
+// on received messages (empty when absent).
+func messageSessionID(input nodestore.MessageInterface) (string, bool) {
+	if input == nil || input.GetMetadata() == nil {
+		return "", false
+	}
+	id, _ := input.GetMetadata()["sessionId"].(string)
+	return id, id != ""
+}
+
+// waitForListenerConns polls the shared listener until a client is
+// connected or the budget expires — the first message after deploy can
+// race a looped-back client still completing its handshake.
+func (n *WebSocketOutNode) waitForListenerConns(budget time.Duration) []string {
+	deadline := time.Now().Add(budget)
+	for {
+		if conns := n.listener.Conns(); len(conns) > 0 {
+			return conns
+		}
+		if time.Now().After(deadline) {
+			return nil
+		}
+		select {
+		case <-n.done:
+			return nil
+		case <-time.After(25 * time.Millisecond):
+		}
 	}
 }
 
