@@ -25,7 +25,7 @@ func factory(n nodestore.NodeInterface, e nodebase.NodeHost) (nodebase.NodeExecu
 	if err := translateNRRules(n, c); err != nil {
 		return nil, err
 	}
-	return NewSwitchNode(n, c), nil
+	return NewSwitchNode(n, c, e), nil
 }
 
 // nrRuleOps maps Node-RED rule type codes onto native ops. Types with
@@ -46,6 +46,11 @@ func translateNRRules(n nodestore.NodeInterface, c *SwitchConfig) error {
 	if !ok {
 		return nil
 	}
+	// Node-level property/propertyType are the defaults for rules that
+	// do not carry their own p/pt — upstream serializes the property
+	// type selector once on the node ("msg"/"flow"/"global"/"jsonata").
+	nodeProp, _ := n.GetData()["property"].(string)
+	propType, _ := n.GetData()["propertyType"].(string)
 	translated := make([]nodebase.SwitchRule, 0, len(raw))
 	for i, r := range raw {
 		m, ok := r.(map[string]interface{})
@@ -64,20 +69,61 @@ func translateNRRules(n nodestore.NodeInterface, c *SwitchConfig) error {
 			continue
 		}
 		p, _ := m["p"].(string)
+		if p == "" {
+			p = nodeProp
+		}
 		if t == "true" || t == "false" {
-			translated = append(translated, nodebase.SwitchRule{Property: nrSwitchPath(p), Op: "eq", Value: t})
+			propType := propType
+			if pt, _ := m["pt"].(string); pt != "" {
+				propType = pt
+			}
+			if propType == "flow" || propType == "global" {
+				translated = append(translated, nodebase.SwitchRule{Property: p, PropertyType: propType, Op: "eq", Value: t, ValueType: "bool"})
+			} else {
+				translated = append(translated, nodebase.SwitchRule{Property: nrSwitchPath(p), Op: "eq", Value: t, ValueType: "bool"})
+			}
 			continue
 		}
 		op, supported := nrRuleOps[t]
 		if !supported {
 			return fmt.Errorf("switch: rule %d uses Node-RED type %q which has no equivalent op", i, t)
 		}
-		if pt, _ := m["pt"].(string); pt != "" && pt != "msg" {
-			return fmt.Errorf("switch: rule %d reads %s context — only msg properties are supported", i, pt)
+		// The property defaults to the node-level "property" when the
+		// rule does not carry its own — upstream serializes context
+		// reads as node-level propertyType:"flow"/"global".
+		pt, _ := m["pt"].(string)
+		if pt == "" {
+			pt = propType
 		}
-		p = nrSwitchPath(p)
+		if pt == "" {
+			pt = "msg"
+		}
+		var propType2 string
+		switch pt {
+		case "msg":
+			p = nrSwitchPath(p)
+		case "flow", "global":
+			propType2 = pt // Property stays the raw context key
+		default:
+			return fmt.Errorf("switch: rule %d reads %s context — not supported", i, pt)
+		}
 		v, _ := m["v"].(string)
-		translated = append(translated, nodebase.SwitchRule{Property: p, Op: op, Value: v})
+		vt, _ := m["vt"].(string)
+		if op == "istype" {
+			// istype serializes the expected type name into both v
+			// and vt ("string", "number", …) — vt is not a typedInput
+			// selector here, so it is not validated against the value
+			// type whitelist.
+			vt = ""
+		}
+		switch vt {
+		case "", "str", "num", "bool", "json", "msg", "env", "flow", "global":
+		default:
+			return fmt.Errorf("switch: rule %d uses Node-RED value type %q — not supported", i, vt)
+		}
+		translated = append(translated, nodebase.SwitchRule{
+			Property: p, PropertyType: propType2, Op: op, Value: v, ValueType: vt,
+		})
 	}
 	if len(translated) > 0 {
 		c.Rules = translated
@@ -133,10 +179,11 @@ var schema = map[string]interface{}{
 						"enum": []string{"eq", "neq", "gt", "lt", "lte", "gte", "contains", "empty", "regex", "istype"},
 					},
 					"value": map[string]interface{}{
-						"type":      "string",
-						"title":     "Value",
-						"format":    "typedinput",
-						"typeField": "valueType",
+						"type":            "string",
+						"title":           "Value",
+						"format":          "typedinput",
+						"typeField":       "valueType",
+						"typedInputTypes": []string{"str", "num", "bool", "json", "msg", "env", "flow", "global"},
 					},
 				},
 			},
@@ -171,15 +218,23 @@ type SwitchConfig struct {
 // The node itself is a pass-through; routing happens via SelectPorts.
 type SwitchNode struct {
 	*nodebase.BaseNode
-	config *SwitchConfig
+	config     *SwitchConfig
+	host       nodebase.NodeHost
+	workflowID string
 }
 
-// NewSwitchNode creates a new switch node
-func NewSwitchNode(node nodestore.NodeInterface, config *SwitchConfig) *SwitchNode {
-	return &SwitchNode{
-		BaseNode: nodebase.NewBaseNode(node),
-		config:   config,
+// NewSwitchNode creates a new switch node. host is optional — without
+// it, rules reading flow/global context or env vars simply miss.
+func NewSwitchNode(node nodestore.NodeInterface, config *SwitchConfig, host ...nodebase.NodeHost) *SwitchNode {
+	s := &SwitchNode{
+		BaseNode:   nodebase.NewBaseNode(node),
+		config:     config,
+		workflowID: node.GetWorkflowID(),
 	}
+	if len(host) > 0 {
+		s.host = host[0]
+	}
+	return s
 }
 
 // Execute passes the input through unchanged — routing is done by the
@@ -225,8 +280,9 @@ func (n *SwitchNode) Validate() error {
 // an empty slice — the message dies at this node.
 func (n *SwitchNode) SelectPorts(input, output nodestore.MessageInterface) []string {
 	var ports []string
+	rc := &nodebase.RuleContext{Host: n.host, WorkflowID: n.workflowID, NodeID: n.ID()}
 	for i, rule := range n.config.Rules {
-		if nodebase.EvalSwitchRule(rule, input) {
+		if nodebase.EvalSwitchRuleCtx(rule, input, rc) {
 			ports = append(ports, fmt.Sprintf("output_%d", i+1))
 			if n.mode() == "first" {
 				break

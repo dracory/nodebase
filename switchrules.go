@@ -14,11 +14,21 @@ import (
 // (condition builds a single eq/neq rule and delegates to the same
 // machinery).
 
-// evalSwitchRule evaluates a single rule against the payload's data.
+// EvalSwitchRule evaluates a single rule against the payload's data —
+// the host-less variant kept for callers that never reference context.
 func EvalSwitchRule(rule SwitchRule, payload nodestore.MessageInterface) bool {
+	return EvalSwitchRuleCtx(rule, payload, nil)
+}
+
+// EvalSwitchRuleCtx is EvalSwitchRule with the host seam attached:
+// rules whose property or comparison value reads flow/global context
+// or an environment variable resolve through rc.
+func EvalSwitchRuleCtx(rule SwitchRule, payload nodestore.MessageInterface, rc *RuleContext) bool {
 	var value interface{}
 	found := false
-	if payload != nil {
+	if rule.PropertyType == "flow" || rule.PropertyType == "global" {
+		value, found = rc.ContextGet(rule.PropertyType, rule.Property)
+	} else if payload != nil {
 		if rule.Property == "" {
 			// Node-RED parity: "msg.payload" evaluates the payload
 			// itself — works for scalar payloads too.
@@ -33,7 +43,7 @@ func EvalSwitchRule(rule SwitchRule, payload nodestore.MessageInterface) bool {
 		}
 	}
 
-	expected := rule.expectedValue(payload)
+	expected := rule.expectedValue(payload, rc)
 
 	switch rule.Op {
 	case "eq":
@@ -184,20 +194,30 @@ func isEmptyValue(value interface{}) bool {
 
 // SwitchRule is a single ordered rule evaluated against the incoming
 // payload. Property is a dotted path into msg.Payload (e.g. "path" or
-// "body.user.role"). Rule index i maps to output port "output_{i+1}".
+// "body.user.role") — or a context key when PropertyType is
+// "flow"/"global". Rule index i maps to output port "output_{i+1}".
 // ValueType is Node-RED's vt: how Value is interpreted — "str"
-// (default), "num", "bool", "json" or "msg" (a message property path).
+// (default), "num", "bool", "json", "msg" (a message property path),
+// "env" (environment variable name) or "flow"/"global" (context key).
 type SwitchRule struct {
-	Property  string `json:"property"`
-	Op        string `json:"op"` // eq | neq | gt | lt | lte | gte | contains | empty | regex | istype
-	Value     string `json:"value"`
-	ValueType string `json:"valueType,omitempty"`
+	Property     string `json:"property"`
+	PropertyType string `json:"propertyType,omitempty"` // ""|"msg" (default) | "flow" | "global"
+	Op           string `json:"op"`                     // eq | neq | gt | lt | lte | gte | contains | empty | regex | istype
+	Value        string `json:"value"`
+	ValueType    string `json:"valueType,omitempty"`
 }
 
 // expectedValue resolves the rule's comparison value per ValueType —
-// Node-RED's typedInput semantics (v interpreted as vt).
-func (r SwitchRule) expectedValue(payload nodestore.MessageInterface) interface{} {
+// Node-RED's typedInput semantics (v interpreted as vt). Context and
+// env lookups go through rc (nil disables them).
+func (r SwitchRule) expectedValue(payload nodestore.MessageInterface, rc *RuleContext) interface{} {
 	switch r.ValueType {
+	case "env":
+		v, _ := rc.Env(r.Value)
+		return v
+	case "flow", "global":
+		v, _ := rc.ContextGet(r.ValueType, r.Value)
+		return v
 	case "num":
 		if f, ok := ParseNumericString(r.Value); ok {
 			return f

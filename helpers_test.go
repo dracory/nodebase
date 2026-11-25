@@ -332,45 +332,45 @@ func TestEvalSwitchRule(t *testing.T) {
 		payload interface{}
 		want    bool
 	}{
-		{"eq num", SwitchRule{"v", "eq", "5", ""}, map[string]interface{}{"v": 5.0}, true},
-		{"eq str", SwitchRule{"v", "eq", "abc", ""}, map[string]interface{}{"v": "abc"}, true},
-		{"eq missing", SwitchRule{"v", "eq", "5", ""}, map[string]interface{}{}, false},
-		{"neq hit", SwitchRule{"v", "neq", "5", ""}, map[string]interface{}{"v": 6.0}, true},
-		{"neq missing", SwitchRule{"v", "neq", "5", ""}, map[string]interface{}{}, true},
-		{"gt", SwitchRule{"v", "gt", "5", ""}, map[string]interface{}{"v": 6.0}, true},
-		{"lt", SwitchRule{"v", "lt", "5", ""}, map[string]interface{}{"v": 4.0}, true},
-		{"lte eq", SwitchRule{"v", "lte", "5", ""}, map[string]interface{}{"v": 5.0}, true},
-		{"gte eq", SwitchRule{"v", "gte", "5", ""}, map[string]interface{}{"v": 5.0}, true},
-		{"gt str cmp", SwitchRule{"v", "gt", "b", ""}, map[string]interface{}{"v": "c"}, true},
-		{"contains str", SwitchRule{"v", "contains", "ell", ""}, map[string]interface{}{"v": "hello"}, true},
-		{"contains arr", SwitchRule{"v", "contains", "2", ""}, map[string]interface{}{"v": []interface{}{1.0, 2.0}}, true},
-		{"empty nil", SwitchRule{"v", "empty", "", ""}, map[string]interface{}{"v": nil}, true},
-		{"empty str", SwitchRule{"v", "empty", "", ""}, map[string]interface{}{"v": ""}, true},
-		{"empty arr", SwitchRule{"v", "empty", "", ""}, map[string]interface{}{"v": []interface{}{}}, true},
-		{"empty missing", SwitchRule{"v", "empty", "", ""}, map[string]interface{}{}, true},
-		{"regex", SwitchRule{"v", "regex", "^h.llo$", ""}, map[string]interface{}{"v": "hello"}, true},
-		{"regex slashed", SwitchRule{"v", "regex", "/^h.llo$/", ""}, map[string]interface{}{"v": "hello"}, true},
-		{"regex bad", SwitchRule{"v", "regex", "([unclosed", ""}, map[string]interface{}{"v": "x"}, false},
-		{"istype string", SwitchRule{"v", "istype", "string", ""}, map[string]interface{}{"v": "s"}, true},
-		{"istype number", SwitchRule{"v", "istype", "number", ""}, map[string]interface{}{"v": 1.5}, true},
-		{"istype bool", SwitchRule{"v", "istype", "boolean", ""}, map[string]interface{}{"v": true}, true},
-		{"istype array", SwitchRule{"v", "istype", "array", ""}, map[string]interface{}{"v": []interface{}{}}, true},
-		{"istype object", SwitchRule{"v", "istype", "object", ""}, map[string]interface{}{"v": map[string]interface{}{}}, true},
-		{"istype null", SwitchRule{"v", "istype", "null", ""}, map[string]interface{}{"v": nil}, true},
-		{"istype missing-null", SwitchRule{"v", "istype", "null", ""}, map[string]interface{}{}, true},
-		{"istype missing-undef", SwitchRule{"v", "istype", "undefined", ""}, map[string]interface{}{}, true},
-		{"istype bogus", SwitchRule{"v", "istype", "weird", ""}, map[string]interface{}{"v": 1}, false},
-		{"unknown op", SwitchRule{"v", "wibble", "1", ""}, map[string]interface{}{"v": 1}, false},
+		{"eq num", SwitchRule{"v", "", "eq", "5", ""}, map[string]interface{}{"v": 5.0}, true},
+		{"eq str", SwitchRule{"v", "", "eq", "abc", ""}, map[string]interface{}{"v": "abc"}, true},
+		{"eq missing", SwitchRule{"v", "", "eq", "5", ""}, map[string]interface{}{}, false},
+		{"neq hit", SwitchRule{"v", "", "neq", "5", ""}, map[string]interface{}{"v": 6.0}, true},
+		{"neq missing", SwitchRule{"v", "", "neq", "5", ""}, map[string]interface{}{}, true},
+		{"gt", SwitchRule{"v", "", "gt", "5", ""}, map[string]interface{}{"v": 6.0}, true},
+		{"lt", SwitchRule{"v", "", "lt", "5", ""}, map[string]interface{}{"v": 4.0}, true},
+		{"lte eq", SwitchRule{"v", "", "lte", "5", ""}, map[string]interface{}{"v": 5.0}, true},
+		{"gte eq", SwitchRule{"v", "", "gte", "5", ""}, map[string]interface{}{"v": 5.0}, true},
+		{"gt str cmp", SwitchRule{"v", "", "gt", "b", ""}, map[string]interface{}{"v": "c"}, true},
+		{"contains str", SwitchRule{"v", "", "contains", "ell", ""}, map[string]interface{}{"v": "hello"}, true},
+		{"contains arr", SwitchRule{"v", "", "contains", "2", ""}, map[string]interface{}{"v": []interface{}{1.0, 2.0}}, true},
+		{"empty nil", SwitchRule{"v", "", "empty", "", ""}, map[string]interface{}{"v": nil}, true},
+		{"empty str", SwitchRule{"v", "", "empty", "", ""}, map[string]interface{}{"v": ""}, true},
+		{"empty arr", SwitchRule{"v", "", "empty", "", ""}, map[string]interface{}{"v": []interface{}{}}, true},
+		{"empty missing", SwitchRule{"v", "", "empty", "", ""}, map[string]interface{}{}, true},
+		{"regex", SwitchRule{"v", "", "regex", "^h.llo$", ""}, map[string]interface{}{"v": "hello"}, true},
+		{"regex slashed", SwitchRule{"v", "", "regex", "/^h.llo$/", ""}, map[string]interface{}{"v": "hello"}, true},
+		{"regex bad", SwitchRule{"v", "", "regex", "([unclosed", ""}, map[string]interface{}{"v": "x"}, false},
+		{"istype string", SwitchRule{"v", "", "istype", "string", ""}, map[string]interface{}{"v": "s"}, true},
+		{"istype number", SwitchRule{"v", "", "istype", "number", ""}, map[string]interface{}{"v": 1.5}, true},
+		{"istype bool", SwitchRule{"v", "", "istype", "boolean", ""}, map[string]interface{}{"v": true}, true},
+		{"istype array", SwitchRule{"v", "", "istype", "array", ""}, map[string]interface{}{"v": []interface{}{}}, true},
+		{"istype object", SwitchRule{"v", "", "istype", "object", ""}, map[string]interface{}{"v": map[string]interface{}{}}, true},
+		{"istype null", SwitchRule{"v", "", "istype", "null", ""}, map[string]interface{}{"v": nil}, true},
+		{"istype missing-null", SwitchRule{"v", "", "istype", "null", ""}, map[string]interface{}{}, true},
+		{"istype missing-undef", SwitchRule{"v", "", "istype", "undefined", ""}, map[string]interface{}{}, true},
+		{"istype bogus", SwitchRule{"v", "", "istype", "weird", ""}, map[string]interface{}{"v": 1}, false},
+		{"unknown op", SwitchRule{"v", "", "wibble", "1", ""}, map[string]interface{}{"v": 1}, false},
 		// ValueType (Node-RED vt): the comparison value is coerced
 		// before the operator runs.
-		{"vt num", SwitchRule{"v", "eq", "5", "num"}, map[string]interface{}{"v": 5.0}, true},
-		{"vt num str-side", SwitchRule{"v", "eq", "5", "num"}, map[string]interface{}{"v": "5"}, true},
-		{"vt bool", SwitchRule{"v", "eq", "true", "bool"}, map[string]interface{}{"v": true}, true},
-		{"vt bool neq", SwitchRule{"v", "neq", "false", "bool"}, map[string]interface{}{"v": "false"}, true},
-		{"vt json", SwitchRule{"v", "eq", "[1,2]", "json"}, map[string]interface{}{"v": []interface{}{1.0, 2.0}}, true},
-		{"vt msg", SwitchRule{"v", "eq", "w", "msg"}, map[string]interface{}{"v": 5.0, "w": 5.0}, true},
-		{"vt msg neq", SwitchRule{"v", "eq", "w", "msg"}, map[string]interface{}{"v": 5.0, "w": 6.0}, false},
-		{"vt msg payload", SwitchRule{"v", "eq", "payload", "msg"}, map[string]interface{}{"v": map[string]interface{}{"x": 1.0}}, false},
+		{"vt num", SwitchRule{"v", "", "eq", "5", "num"}, map[string]interface{}{"v": 5.0}, true},
+		{"vt num str-side", SwitchRule{"v", "", "eq", "5", "num"}, map[string]interface{}{"v": "5"}, true},
+		{"vt bool", SwitchRule{"v", "", "eq", "true", "bool"}, map[string]interface{}{"v": true}, true},
+		{"vt bool neq", SwitchRule{"v", "", "neq", "false", "bool"}, map[string]interface{}{"v": "false"}, true},
+		{"vt json", SwitchRule{"v", "", "eq", "[1,2]", "json"}, map[string]interface{}{"v": []interface{}{1.0, 2.0}}, true},
+		{"vt msg", SwitchRule{"v", "", "eq", "w", "msg"}, map[string]interface{}{"v": 5.0, "w": 5.0}, true},
+		{"vt msg neq", SwitchRule{"v", "", "eq", "w", "msg"}, map[string]interface{}{"v": 5.0, "w": 6.0}, false},
+		{"vt msg payload", SwitchRule{"v", "", "eq", "payload", "msg"}, map[string]interface{}{"v": map[string]interface{}{"x": 1.0}}, false},
 	}
 	for _, c := range cases {
 		if got := EvalSwitchRule(c.rule, msg(c.payload)); got != c.want {
@@ -378,11 +378,11 @@ func TestEvalSwitchRule(t *testing.T) {
 		}
 	}
 	// nil payload must not panic
-	if EvalSwitchRule(SwitchRule{"v", "eq", "1", ""}, nil) {
+	if EvalSwitchRule(SwitchRule{"v", "", "eq", "1", ""}, nil) {
 		t.Fatal("nil payload eq should be false")
 	}
 	// scalar (non-map) payload: nothing found
-	if EvalSwitchRule(SwitchRule{"v", "neq", "1", ""}, msg("scalar")) != true {
+	if EvalSwitchRule(SwitchRule{"v", "", "neq", "1", ""}, msg("scalar")) != true {
 		t.Fatal("neq on non-map payload should pass")
 	}
 }
