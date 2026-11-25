@@ -503,13 +503,13 @@ func (n *BatchNode) state() *batchState {
 	}).(*batchState)
 }
 
-// mode returns the configured batch mode (default "count")
+// mode returns the configured batch mode (default "count"). Unknown
+// non-empty values are preserved so Validate can reject them loudly.
 func (n *BatchNode) mode() string {
-	switch n.config.Mode {
-	case "interval", "concat":
-		return n.config.Mode
+	if n.config.Mode == "" {
+		return "count"
 	}
-	return "count"
+	return n.config.Mode
 }
 
 // newID returns a sequence id for synthetic messages.

@@ -348,6 +348,18 @@ func (n *JoinNode) executeCustom(input nodestore.MessageInterface) (nodestore.Me
 	partID := "_"
 	targetCount := n.config.Count
 	parts, hasParts := input.GetMetadata()["parts"].(map[string]interface{})
+	// Node-RED useparts=false strips the incoming split's parts metadata
+	// in custom mode, preserving any outer parts frame under parts.parts.
+	// The stripped message is what joins the group and what the completed
+	// output is cloned from.
+	if hasParts && !n.useParts() {
+		if outer, ok := parts["parts"]; ok {
+			input.GetMetadata()["parts"] = map[string]interface{}{"parts": outer}
+		} else {
+			delete(input.GetMetadata(), "parts")
+		}
+		parts, hasParts = input.GetMetadata()["parts"].(map[string]interface{})
+	}
 	if n.config.countFromParts && hasParts {
 		if c, err := nodebase.ToFloat(parts["count"]); err == nil {
 			targetCount = int(c)
@@ -615,7 +627,8 @@ func (n *JoinNode) completeGroup(partID string, auto bool) nodestore.MessageInte
 		group.timer.Stop()
 		group.timer = nil
 	}
-	if auto || !n.config.Accumulate {
+	_, hadComplete := group.msg.GetMetadata()["complete"]
+	if auto || !n.config.Accumulate || hadComplete {
 		delete(state.groups, partID)
 	}
 	state.mu.Unlock()
@@ -714,22 +727,22 @@ func (n *JoinNode) state() *joinState {
 	}).(*joinState)
 }
 
-// mode returns the configured grouping mode (default "auto")
+// mode returns the configured grouping mode (default "auto"). Unknown
+// non-empty values are preserved so Validate can reject them loudly.
 func (n *JoinNode) mode() string {
-	switch n.config.Mode {
-	case "custom", "reduce":
-		return n.config.Mode
+	if n.config.Mode == "" {
+		return "auto"
 	}
-	return "auto"
+	return n.config.Mode
 }
 
-// build returns the configured join shape (default "array")
+// build returns the configured join shape (default "array"). Unknown
+// non-empty values are preserved so Validate can reject them loudly.
 func (n *JoinNode) build() string {
-	switch n.config.Build {
-	case "object", "merged", "string":
-		return n.config.Build
+	if n.config.Build == "" {
+		return "array"
 	}
-	return "array"
+	return n.config.Build
 }
 
 // property returns the configured target property (default "payload")
@@ -746,6 +759,12 @@ func (n *JoinNode) key() string {
 		return "topic"
 	}
 	return n.config.Key
+}
+
+// useParts reports whether custom mode preserves incoming parts
+// metadata. Node-RED defaults the serialized flag to true when absent.
+func (n *JoinNode) useParts() bool {
+	return n.config.UseParts == nil || *n.config.UseParts
 }
 
 // joiner returns the string-build delimiter (joinerType "str"

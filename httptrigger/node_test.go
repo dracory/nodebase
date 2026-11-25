@@ -90,13 +90,15 @@ func TestTriggerRoundTrip(t *testing.T) {
 		t.Fatalf("body wrong: %q", rec.Body.String())
 	}
 
-	// injected payload carries the request object + params
+	// Node-RED shape: POST payload is the decoded body; routing and
+	// request-line context live on msg.req metadata.
 	data := host.injected.GetPayload().(map[string]interface{})
-	if data["method"] != http.MethodPost || data["params"].(map[string]string)["id"] != "7" {
-		t.Fatalf("injected data wrong: %v", data)
+	if data["k"] != float64(2) {
+		t.Fatalf("injected payload wrong: %v", data)
 	}
-	if data["body"].(map[string]interface{})["k"] != float64(2) {
-		t.Fatalf("body decode wrong: %v", data["body"])
+	reqMeta := host.injected.GetMetadata()["req"].(map[string]interface{})
+	if reqMeta["method"] != http.MethodPost || reqMeta["params"].(map[string]string)["id"] != "7" {
+		t.Fatalf("req metadata wrong: %v", reqMeta)
 	}
 	if host.injected.GetMetadata()["path"] != "/go/7" {
 		t.Fatal("request metadata missing")
@@ -189,7 +191,7 @@ func TestTriggerBodyParsing(t *testing.T) {
 		{"form", "application/x-www-form-urlencoded", "a=1&b=x&b=y", map[string]interface{}{"a": "1", "b": []string{"x", "y"}}},
 		{"text", "text/plain; charset=utf-8", "hello", "hello"},
 		{"binary", "application/octet-stream", "\x01\x02", []byte{1, 2}},
-		{"no content type", "", "raw", []byte("raw")},
+		{"no content type", "", "raw", "raw"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -207,7 +209,7 @@ func TestTriggerBodyParsing(t *testing.T) {
 			if rec.Code != 200 {
 				t.Fatalf("status wrong: %d", rec.Code)
 			}
-			got := host.injected.GetPayload().(map[string]interface{})["body"]
+			got := host.injected.GetPayload()
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("body wrong: %#v want %#v", got, tc.want)
 			}
@@ -250,7 +252,7 @@ func TestTriggerReqMetadata(t *testing.T) {
 	n := newNode(&HTTPTriggerConfig{Method: http.MethodGet, Path: "/x"}, host)
 	host.responseCh <- nodestore.NewMessage().SetPayload("ok")
 
-	req := httptest.NewRequest(http.MethodGet, "/x?a=1", nil)
+	req := httptest.NewRequest(http.MethodGet, "/x?a=1&a=2&b=x", nil)
 	req.Header.Set("X-Trace", "abc")
 	req.AddCookie(&http.Cookie{Name: "sid", Value: "s3cret"})
 	rec := httptest.NewRecorder()
@@ -260,14 +262,21 @@ func TestTriggerReqMetadata(t *testing.T) {
 	if !ok {
 		t.Fatalf("req metadata missing: %v", host.injected.GetMetadata())
 	}
-	if reqMeta["headers"].(http.Header).Get("X-Trace") != "abc" {
-		t.Fatalf("headers not surfaced: %v", reqMeta["headers"])
+	if reqMeta["headers"].(map[string]interface{})["x-trace"] != "abc" {
+		t.Fatalf("headers not surfaced in Node-RED shape: %v", reqMeta["headers"])
 	}
 	if reqMeta["cookies"].(map[string]string)["sid"] != "s3cret" {
 		t.Fatalf("cookies not surfaced: %v", reqMeta["cookies"])
 	}
 	if reqMeta["method"] != http.MethodGet || reqMeta["path"] != "/x" {
 		t.Fatalf("req fields wrong: %v", reqMeta)
+	}
+	query := reqMeta["query"].(map[string]interface{})
+	if query["b"] != "x" || !reflect.DeepEqual(query["a"], []string{"1", "2"}) {
+		t.Fatalf("query not flattened in Node-RED shape: %v", query)
+	}
+	if !reflect.DeepEqual(host.injected.GetPayload(), query) {
+		t.Fatalf("GET payload should be the query object: %#v", host.injected.GetPayload())
 	}
 }
 

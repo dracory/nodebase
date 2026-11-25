@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 //go:embed editor.html
@@ -280,28 +281,33 @@ func (n *HTTPTrigger) handleRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Create workflow payload from request — Data is a request object
-	// (Node-RED msg.payload equivalent) so downstream nodes always have
-	// something to work with, even for bodiless GETs
-	data := map[string]interface{}{
-		"method":  r.Method,
-		"path":    r.URL.Path,
-		"query":   r.URL.Query(),
-		"headers": r.Header,
-		"body":    requestData,
+	// Create the message in Node-RED's http-in shape. GET carries the
+	// query object in msg.payload; body-capable methods carry the parsed
+	// request body. The request object itself is msg.req (represented in
+	// metadata because the message envelope separates payload/metadata).
+	query := queryObject(r.URL.Query())
+	headers := headerObject(r.Header)
+	params := map[string]string{}
+	for _, p := range n.params {
+		params[p] = r.PathValue(p)
 	}
-	if len(n.params) > 0 {
-		params := make(map[string]string, len(n.params))
-		for _, p := range n.params {
-			params[p] = r.PathValue(p)
+
+	var messagePayload interface{}
+	switch n.config.Method {
+	case http.MethodGet:
+		messagePayload = query
+	case http.MethodPost, http.MethodDelete, http.MethodPut, http.MethodOptions, http.MethodPatch:
+		messagePayload = requestData
+		if messagePayload == nil {
+			messagePayload = "" // Node-RED's raw body parser initializes req.body to an empty string
 		}
-		data["params"] = params
 	}
-	payload := nodestore.NewMessage().SetPayload(data).SetMetadata(make(map[string]interface{})).SetTimestamp(time.Now())
+	payload := nodestore.NewMessage().SetPayload(messagePayload).SetMetadata(make(map[string]interface{})).SetTimestamp(time.Now())
 
 	// Add request metadata — the flat keys are kept for existing
-	// flows; "req" is the Node-RED msg.req equivalent (headers +
-	// cookies + request line fields in one object).
+	// flows; "req" is the Node-RED msg.req equivalent. Unlike Go's
+	// url.Values/http.Header maps, Node-RED query and header values are
+	// lower-case single strings when the key occurs once.
 	payload.GetMetadata()["method"] = r.Method
 	payload.GetMetadata()["path"] = r.URL.Path
 	payload.GetMetadata()["query"] = r.URL.Query()
@@ -310,13 +316,13 @@ func (n *HTTPTrigger) handleRequest(w http.ResponseWriter, r *http.Request) {
 	payload.GetMetadata()["req"] = map[string]interface{}{
 		"method":     r.Method,
 		"path":       r.URL.Path,
-		"query":      r.URL.Query(),
-		"headers":    r.Header,
+		"query":      query,
+		"params":     params,
+		"headers":    headers,
 		"cookies":    requestCookies(r),
 		"remoteAddr": r.RemoteAddr,
+		"body":       requestData,
 	}
-
-	w.Header().Set("Content-Type", "application/json")
 
 	// Inject the payload into the running workflow; a downstream
 	// httpResponse node answers the request via its message channel
@@ -339,6 +345,15 @@ func (n *HTTPTrigger) handleRequest(w http.ResponseWriter, r *http.Request) {
 		if sc, ok := response.GetMetadata()["statusCode"].(int); ok && sc > 0 {
 			statusCode = sc
 		}
+		// Express res.send semantics: strings are HTML unless the flow
+		// explicitly set a content type; non-strings are JSON.
+		if _, isString := response.GetPayload().(string); isString {
+			if w.Header().Get("Content-Type") == "" {
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			}
+		} else if w.Header().Get("Content-Type") == "" {
+			w.Header().Set("Content-Type", "application/json")
+		}
 		w.WriteHeader(statusCode)
 		// Strings go out raw; anything else is JSON-encoded
 		if body, ok := response.GetPayload().(string); ok {
@@ -349,6 +364,7 @@ func (n *HTTPTrigger) handleRequest(w http.ResponseWriter, r *http.Request) {
 	case <-time.After(n.responseTimeout()):
 		// No httpResponse node in the flow (or the flow stalled)
 		n.host.DiscardPending(msgID)
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusGatewayTimeout)
 		json.NewEncoder(w).Encode(map[string]string{
 			"error": "flow produced no response within the response timeout — is an httpResponse node wired downstream?",
@@ -362,8 +378,8 @@ func (n *HTTPTrigger) handleRequest(w http.ResponseWriter, r *http.Request) {
 // http-in style:
 //   - application/json (or any */*+json) → decoded JSON value
 //   - application/x-www-form-urlencoded → map (repeated keys become slices)
-//   - text/plain → string
-//   - anything else or missing → raw bytes ([]byte)
+//   - text/*, XML, missing content type, and UTF-8 application types → string
+//   - binary application types and non-application/non-text types → raw bytes ([]byte)
 //
 // The body is capped at maxTriggerBodyBytes; on failure it writes the
 // HTTP error itself and returns ok=false so the caller just returns.
@@ -411,11 +427,53 @@ func (n *HTTPTrigger) parseRequestBody(w http.ResponseWriter, r *http.Request) (
 			}
 		}
 		return form, true
-	case mediaType == "text/plain":
+	case mediaType == "":
+		// Node-RED's raw body parser defaults to text when no content
+		// type is present.
 		return string(body), true
+	case strings.HasPrefix(mediaType, "text/") || mediaType == "application/xml" || strings.HasSuffix(mediaType, "+xml"):
+		return string(body), true
+	case strings.HasPrefix(mediaType, "application/"):
+		subtype := strings.TrimPrefix(mediaType, "application/")
+		if subtype == "octet-stream" || subtype == "cbor" || subtype == "x-protobuf" {
+			return body, true
+		}
+		if utf8.Valid(body) {
+			return string(body), true
+		}
+		return body, true
 	default:
 		return body, true
 	}
+}
+
+// queryObject converts url.Values to the Express/Node-RED req.query
+// shape: a single occurrence is a string, repeated keys stay arrays.
+func queryObject(values url.Values) map[string]interface{} {
+	out := make(map[string]interface{}, len(values))
+	for k, v := range values {
+		if len(v) == 1 {
+			out[k] = v[0]
+		} else {
+			out[k] = append([]string(nil), v...)
+		}
+	}
+	return out
+}
+
+// headerObject converts Go's canonical-cased http.Header to the
+// lower-case Node.js/Express req.headers shape exposed by Node-RED.
+func headerObject(headers http.Header) map[string]interface{} {
+	out := make(map[string]interface{}, len(headers))
+	for k, v := range headers {
+		key := strings.ToLower(k)
+		if len(v) == 1 {
+			out[key] = v[0]
+		} else {
+			out[key] = append([]string(nil), v...)
+		}
+	}
+	return out
 }
 
 // requestCookies flattens the request's Cookie header into a

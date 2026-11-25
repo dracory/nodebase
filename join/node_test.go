@@ -216,6 +216,58 @@ func TestJoinCustom(t *testing.T) {
 	}
 }
 
+func TestJoinCustomUsePartsFalse(t *testing.T) {
+	host := newFakeHost()
+	useParts := false
+	n := newNode(&JoinConfig{Mode: "custom", Count: 2, UseParts: &useParts}, host)
+	ctx := context.Background()
+	if out, _ := n.Execute(ctx, partMsg("g", 0, 2, "a")); out != nil {
+		t.Fatal("first message should buffer")
+	}
+	out, err := n.Execute(ctx, partMsg("g", 1, 2, "b"))
+	if err != nil || out == nil {
+		t.Fatalf("second message should complete the group: out=%v err=%v", out, err)
+	}
+	if _, ok := out.GetMetadata()["parts"]; ok {
+		t.Fatalf("useparts=false should strip parts metadata from the joined output: %v", out.GetMetadata())
+	}
+	arr := out.GetPayload().([]interface{})
+	if len(arr) != 2 || arr[0] != "a" || arr[1] != "b" {
+		t.Fatalf("joined payload wrong: %v", arr)
+	}
+}
+
+func TestJoinAccumulateCompleteClosesGroup(t *testing.T) {
+	host := newFakeHost()
+	n := newNode(&JoinConfig{Mode: "custom", Build: "merged", Count: 2, Accumulate: true}, host)
+	ctx := context.Background()
+	mk := func(key string, v int) nodestore.MessageInterface {
+		return nodestore.NewMessage().SetPayload(map[string]interface{}{key: v})
+	}
+	if out, _ := n.Execute(ctx, mk("a", 1)); out != nil {
+		t.Fatal("first merged object should buffer")
+	}
+	out, err := n.Execute(ctx, mk("b", 2))
+	if err != nil || out == nil {
+		t.Fatal("second distinct key should complete the count group")
+	}
+	completion := nodestore.NewMessage().SetPayload(map[string]interface{}{"c": 3})
+	completion.SetMetadata(map[string]interface{}{"complete": true})
+	out, err = n.Execute(ctx, completion)
+	if err != nil || out == nil {
+		t.Fatal("msg.complete should flush the accumulated group")
+	}
+	merged := out.GetPayload().(map[string]interface{})
+	if merged["a"] != 1 || merged["b"] != 2 || merged["c"] != 3 {
+		t.Fatalf("accumulated merge wrong: %v", merged)
+	}
+	// Unlike count-triggered accumulation, msg.complete closes the group in
+	// Node-RED. A fresh message must therefore start a new incomplete group.
+	if out, _ := n.Execute(ctx, mk("d", 4)); out != nil {
+		t.Fatalf("group should have closed after msg.complete; got immediate output %v", out)
+	}
+}
+
 func TestJoinCustomNoCount(t *testing.T) {
 	host := newFakeHost()
 	n := newNode(&JoinConfig{Mode: "custom"}, host)
@@ -250,14 +302,11 @@ func TestJoinValidate(t *testing.T) {
 	if err := newNode(&JoinConfig{Mode: "auto", Build: "array"}, host).Validate(); err != nil {
 		t.Fatalf("valid config rejected: %v", err)
 	}
-	// NOTE: mode()/build() normalize unknown values to defaults, so the
-	// Validate switch can never actually fire — bogus values are accepted
-	// and degrade to auto/array (documented; flagged in task evidence).
-	if err := newNode(&JoinConfig{Mode: "bogus"}, host).Validate(); err != nil {
-		t.Fatalf("bogus mode degrades to auto, should validate: %v", err)
+	if err := newNode(&JoinConfig{Mode: "bogus"}, host).Validate(); err == nil {
+		t.Fatal("bogus mode should fail validation loudly")
 	}
-	if err := newNode(&JoinConfig{Build: "bogus"}, host).Validate(); err != nil {
-		t.Fatalf("bogus build degrades to array, should validate: %v", err)
+	if err := newNode(&JoinConfig{Build: "bogus"}, host).Validate(); err == nil {
+		t.Fatal("bogus build should fail validation loudly")
 	}
 }
 

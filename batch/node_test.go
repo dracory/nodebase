@@ -224,10 +224,8 @@ func TestBatchValidate(t *testing.T) {
 	if err := n.Validate(); err != nil {
 		t.Fatalf("valid config rejected: %v", err)
 	}
-	// NOTE: mode() normalizes unknown values to "count", so Validate can
-	// never fire on a bogus mode (documented; flagged in task evidence).
 	bad, _ := newNode(&BatchConfig{Mode: "bogus"})
-	if err := bad.Validate(); err != nil {
-		t.Fatalf("bogus mode degrades to count, should validate: %v", err)
+	if err := bad.Validate(); err == nil {
+		t.Fatal("bogus mode should fail validation loudly")
 	}
 }
