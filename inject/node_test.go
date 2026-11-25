@@ -358,3 +358,22 @@ func TestPropsExplicitEmptyWins(t *testing.T) {
 		t.Fatalf("explicit empty topic should win over legacy, got %v", got)
 	}
 }
+
+// TestInjectJSONataPayload — a payloadType:"jsonata" payload is a
+// JSONata expression evaluated against the message being injected.
+func TestInjectJSONataPayload(t *testing.T) {
+	build := func(cfg *InjectConfig) nodestore.MessageInterface {
+		n := NewInjectNode(nodestore.NewNode("n", "inject").SetWorkflowID("wf"), cfg, nil)
+		if _, err := n.Execute(context.Background(), nodestore.NewMessage()); err != nil {
+			t.Fatalf("execute failed: %v", err)
+		}
+		return n.buildPayload()
+	}
+	if d := build(&InjectConfig{Payload: "\"Hello, World!\"", PayloadType: "jsonata"}).GetPayload(); d != "Hello, World!" {
+		t.Fatalf("jsonata literal payload: got %v", d)
+	}
+	// The resolved props are in scope for the expression.
+	if d := build(&InjectConfig{Topic: "t1", Payload: "topic & \"!\"", PayloadType: "jsonata"}).GetPayload(); d != "t1!" {
+		t.Fatalf("jsonata expression payload: got %v", d)
+	}
+}

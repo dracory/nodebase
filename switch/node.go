@@ -31,9 +31,8 @@ func factory(n nodestore.NodeInterface, e nodebase.NodeHost) (nodebase.NodeExecu
 	return NewSwitchNode(n, c, e), nil
 }
 
-// nrRuleOps maps Node-RED rule type codes onto native ops. Types with
-// no native equivalent (jsonata_exp) are deliberately absent; "else"
-// and "true"/"false" get bespoke translation below.
+// nrRuleOps maps Node-RED rule type codes onto native ops. "else",
+// "true"/"false" and "jsonata_exp" get bespoke translation below.
 var nrRuleOps = map[string]string{
 	"eq": "eq", "neq": "neq", "lt": "lt", "lte": "lte",
 	"gt": "gt", "gte": "gte", "cont": "contains",
@@ -87,13 +86,24 @@ func translateNRRules(n nodestore.NodeInterface, c *SwitchConfig) error {
 			case propType == "flow" || propType == "global":
 				translated = append(translated, nodebase.SwitchRule{Property: p, PropertyType: propType, Op: "eq", Value: t, ValueType: "bool"})
 			case propType == "jsonata":
-				if err := nodebase.CompileSeqExpr(p); err != nil {
+				if err := nodebase.CompileJSONata(p); err != nil {
 					return fmt.Errorf("switch: rule %d jsonata property %q does not compile: %w", i, p, err)
 				}
 				translated = append(translated, nodebase.SwitchRule{Property: p, PropertyType: "jsonata", Op: "eq", Value: t, ValueType: "bool"})
 			default:
 				translated = append(translated, nodebase.SwitchRule{Property: nrSwitchPath(p), Op: "eq", Value: t, ValueType: "bool"})
 			}
+			continue
+		}
+		if t == "jsonata_exp" {
+			// The rule value is a JSONata expression evaluated against
+			// the message — it matches iff the result is exactly true
+			// (Node-RED's jsonata_exp operator).
+			v, _ := m["v"].(string)
+			if err := nodebase.CompileJSONata(v); err != nil {
+				return fmt.Errorf("switch: rule %d jsonata expression %q does not compile: %w", i, v, err)
+			}
+			translated = append(translated, nodebase.SwitchRule{Op: "jsonata_exp", Value: v, ValueType: "jsonata"})
 			continue
 		}
 		op, supported := nrRuleOps[t]
@@ -117,7 +127,7 @@ func translateNRRules(n nodestore.NodeInterface, c *SwitchConfig) error {
 		case "flow", "global":
 			propType2 = pt // Property stays the raw context key
 		case "jsonata":
-			if err := nodebase.CompileSeqExpr(p); err != nil {
+			if err := nodebase.CompileJSONata(p); err != nil {
 				return fmt.Errorf("switch: rule %d jsonata property %q does not compile: %w", i, p, err)
 			}
 			propType2 = "jsonata" // Property stays the raw expression
@@ -134,7 +144,7 @@ func translateNRRules(n nodestore.NodeInterface, c *SwitchConfig) error {
 			vt = ""
 		}
 		switch vt {
-		case "", "str", "num", "bool", "json", "msg", "env", "flow", "global":
+		case "", "str", "num", "bool", "json", "msg", "env", "flow", "global", "jsonata":
 		default:
 			return fmt.Errorf("switch: rule %d uses Node-RED value type %q — not supported", i, vt)
 		}
@@ -142,7 +152,7 @@ func translateNRRules(n nodestore.NodeInterface, c *SwitchConfig) error {
 		v2, _ := m["v2"].(string)
 		vt2, _ := m["vt2"].(string)
 		switch vt2 {
-		case "", "str", "num", "bool", "json", "msg", "env", "flow", "global":
+		case "", "str", "num", "bool", "json", "msg", "env", "flow", "global", "jsonata":
 		default:
 			return fmt.Errorf("switch: rule %d uses Node-RED value2 type %q — not supported", i, vt2)
 		}
@@ -207,6 +217,7 @@ var schema = map[string]interface{}{
 							"contains", "empty", "nempty", "regex", "istype",
 							"true", "false", "null", "nnull", "else",
 							"btwn", "hask", "head", "tail", "index",
+							"jsonata_exp",
 						},
 					},
 					"value": map[string]interface{}{
@@ -410,6 +421,7 @@ var switchOperators = map[string]bool{
 	"true": true, "false": true, "null": true, "nnull": true,
 	"else": true, "btwn": true, "hask": true,
 	"head": true, "tail": true, "index": true,
+	"jsonata_exp": true,
 }
 
 // Validate rejects bad rule configuration at deploy time (project
@@ -427,8 +439,13 @@ func (n *SwitchNode) Validate() error {
 			return fmt.Errorf("switch: rule %d has unknown op %q", i, rule.Op)
 		}
 		if rule.PropertyType == "jsonata" {
-			if err := nodebase.CompileSeqExpr(rule.Property); err != nil {
+			if err := nodebase.CompileJSONata(rule.Property); err != nil {
 				return fmt.Errorf("switch: rule %d jsonata property %q does not compile: %w", i, rule.Property, err)
+			}
+		}
+		if rule.Op == "jsonata_exp" {
+			if err := nodebase.CompileJSONata(rule.Value); err != nil {
+				return fmt.Errorf("switch: rule %d jsonata expression %q does not compile: %w", i, rule.Value, err)
 			}
 		}
 		if rule.Op == "regex" {

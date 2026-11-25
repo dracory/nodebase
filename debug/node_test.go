@@ -106,3 +106,17 @@ func TestDebugConsole(t *testing.T) {
 }
 
 var _ = nodebase.RunEvent{} // keep import used if api shifts
+
+// TestDebugJSONataComplete checks targetType:"jsonata" evaluates the
+// complete field as a JSONata expression against the whole message.
+func TestDebugJSONataComplete(t *testing.T) {
+	msg := nodestore.NewMessage().SetPayload("Hello, World!").SetMetadata(map[string]interface{}{"topic": "Sample"})
+	n := newNode(map[string]interface{}{
+		"complete":   "\"[\" & topic & \"] \" & payload",
+		"targetType": "jsonata",
+	})
+	ev := n.PostRunEvents(n.NodeInterface, msg)
+	if len(ev) < 1 || ev[0].Message != "[Sample] Hello, World!" {
+		t.Fatalf("jsonata complete wrong: %v", ev)
+	}
+}

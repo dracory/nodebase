@@ -68,14 +68,12 @@ var schema = map[string]interface{}{
 			"type":        "integer",
 			"title":       "Port",
 			"description": "Target port (client) or listen port (server); unused for reply",
-			"showIf":      map[string]interface{}{"beserver": []string{"client", "server"}},
 		},
 		"end": map[string]interface{}{
 			"type":        "boolean",
 			"title":       "Close Connection",
-			"description": "Close the connection after each write",
+			"description": "Close the connection after each write (client and server types)",
 			"default":     false,
-			"showIf":      map[string]interface{}{"beserver": []string{"client", "server"}},
 		},
 		"base64": map[string]interface{}{
 			"type":        "boolean",

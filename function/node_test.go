@@ -19,11 +19,21 @@ import (
 // fakeHost implements nodebase.NodeHost: state slot, memory context
 // store, env map and emitted-message capture.
 type fakeHost struct {
-	states  map[string]interface{}
-	emitted []nodestore.MessageInterface
-	events  []string
-	env     map[string]interface{}
-	store   nodebase.ContextStore
+	states     map[string]interface{}
+	emitted    []nodestore.MessageInterface
+	events     []string
+	env        map[string]interface{}
+	store      nodebase.ContextStore
+	runningWf  nodestore.WorkflowInterface
+	downstream []downstreamCall
+}
+
+// downstreamCall records one ExecuteDownstream invocation — the path
+// queued sends (multi-message returns, setTimeout callbacks) take.
+type downstreamCall struct {
+	from  string
+	p     nodestore.MessageInterface
+	ports []string
 }
 
 func newFakeHost() *fakeHost {
@@ -49,8 +59,13 @@ func (h *fakeHost) DiscardPending(id string)                                    
 func (h *fakeHost) LookupNode(wf, nodeID string) (nodestore.NodeInterface, bool) {
 	return nil, false
 }
-func (h *fakeHost) RunningFlow(wf string) (nodestore.WorkflowInterface, bool) { return nil, false }
-func (h *fakeHost) RunContext(wf string) context.Context                      { return context.Background() }
+func (h *fakeHost) RunningFlow(wf string) (nodestore.WorkflowInterface, bool) {
+	if h.runningWf != nil {
+		return h.runningWf, true
+	}
+	return nil, false
+}
+func (h *fakeHost) RunContext(wf string) context.Context { return context.Background() }
 func (h *fakeHost) GetOrCreateNodeState(wf, nodeID string, f func() interface{}) interface{} {
 	key := wf + "/" + nodeID
 	if s, ok := h.states[key]; ok {
@@ -61,6 +76,7 @@ func (h *fakeHost) GetOrCreateNodeState(wf, nodeID string, f func() interface{})
 	return s
 }
 func (h *fakeHost) ExecuteDownstream(ctx context.Context, wf, from string, w nodestore.WorkflowInterface, p nodestore.MessageInterface, ports []string) {
+	h.downstream = append(h.downstream, downstreamCall{from: from, p: p, ports: ports})
 }
 func (h *fakeHost) NodeEnv(wf, nodeID, name string) (interface{}, bool) {
 	v, ok := h.env[name]

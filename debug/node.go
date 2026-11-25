@@ -61,8 +61,8 @@ var schema = map[string]interface{}{
 			"default": "payload",
 			"description": "payload (or empty, and Node-RED's legacy \"false\"): the message data · " +
 				"true: complete msg object incl. metadata · any other string is a msg.<path> " +
-				"(e.g. \"topic\" or \"payload.user\"). Node-RED's JSONata \"expression\" " +
-				"option is not supported — use a function node.",
+				"(e.g. \"topic\" or \"payload.user\") · with targetType \"jsonata\" it is a " +
+				"JSONata expression evaluated against the message.",
 		},
 		"tosidebar": map[string]interface{}{
 			"type":        "boolean",
@@ -199,28 +199,37 @@ func debugMessage(node nodestore.NodeInterface, out nodestore.MessageInterface) 
 
 	complete, _ := node.GetData()["complete"].(string)
 	var value interface{}
-	switch complete {
-	case "true":
-		value = out // the whole payload, Metadata included
-	case "", "payload", "false":
-		// Node-RED parity: complete:"false" is the legacy marker for
-		// "payload" (21-debug.js: this.complete === "false" → "payload")
-		if out != nil {
-			value = out.GetPayload()
+	if tt, _ := node.GetData()["targetType"].(string); tt == "jsonata" && complete != "" {
+		// Node-RED's "expression" option: complete holds a JSONata
+		// expression evaluated against the whole message.
+		v, err := nodebase.EvalJSONata(complete, out)
+		if err == nil {
+			value = v
 		}
-	default:
-		// Node-RED parity: any other string is a msg.<path> — a
-		// "payload." prefix drills into Data (msg.payload.foo);
-		// other paths resolve against Metadata first, then Data.
-		if out != nil {
-			if rest, ok := strings.CutPrefix(complete, "payload."); ok {
-				if m, ok := out.GetPayload().(map[string]interface{}); ok {
-					value, _ = nodebase.GetPath(m, rest)
+	} else {
+		switch complete {
+		case "true":
+			value = out // the whole payload, Metadata included
+		case "", "payload", "false":
+			// Node-RED parity: complete:"false" is the legacy marker for
+			// "payload" (21-debug.js: this.complete === "false" → "payload")
+			if out != nil {
+				value = out.GetPayload()
+			}
+		default:
+			// Node-RED parity: any other string is a msg.<path> — a
+			// "payload." prefix drills into Data (msg.payload.foo);
+			// other paths resolve against Metadata first, then Data.
+			if out != nil {
+				if rest, ok := strings.CutPrefix(complete, "payload."); ok {
+					if m, ok := out.GetPayload().(map[string]interface{}); ok {
+						value, _ = nodebase.GetPath(m, rest)
+					}
+				} else if v, ok := nodebase.GetPath(out.GetMetadata(), complete); ok {
+					value = v
+				} else if m, ok := out.GetPayload().(map[string]interface{}); ok {
+					value, _ = nodebase.GetPath(m, complete)
 				}
-			} else if v, ok := nodebase.GetPath(out.GetMetadata(), complete); ok {
-				value = v
-			} else if m, ok := out.GetPayload().(map[string]interface{}); ok {
-				value, _ = nodebase.GetPath(m, complete)
 			}
 		}
 	}

@@ -294,6 +294,15 @@ func (s *injectSchedule) addTimer(t *time.Timer) {
 // payload type. Called per fire so "timestamp" reflects the fire time,
 // not the deploy time (Node-RED behavior).
 func (n *InjectNode) buildPayload() nodestore.MessageInterface {
+	metadata := map[string]interface{}{"origin": "inject"}
+	if n.topic != "" {
+		metadata["topic"] = n.topic
+	}
+	for k, v := range n.propMetadata {
+		metadata[k] = v
+	}
+	msg := nodestore.NewMessage().SetMetadata(metadata).SetTimestamp(time.Now())
+
 	var data interface{}
 	switch n.payloadType {
 	case "timestamp", "date":
@@ -310,19 +319,19 @@ func (n *InjectNode) buildPayload() nodestore.MessageInterface {
 		data = strings.TrimSpace(n.payloadTemplate) == "true"
 	case "env":
 		data = os.Getenv(n.payloadTemplate)
+	case "jsonata":
+		// Node-RED evaluates the payload expression against the message
+		// being injected (the resolved props above are in scope); an
+		// expression that fails or is undefined injects no payload.
+		if v, err := nodebase.EvalJSONata(n.payloadTemplate, msg); err == nil {
+			data = v
+		}
 	default: // "json"
 		if err := json.Unmarshal([]byte(n.payloadTemplate), &data); err != nil || data == nil {
 			data = "hello"
 		}
 	}
-	metadata := map[string]interface{}{"origin": "inject"}
-	if n.topic != "" {
-		metadata["topic"] = n.topic
-	}
-	for k, v := range n.propMetadata {
-		metadata[k] = v
-	}
-	return nodestore.NewMessage().SetPayload(data).SetMetadata(metadata).SetTimestamp(time.Now())
+	return msg.SetPayload(data)
 }
 
 // NewInjectNode creates a new inject node

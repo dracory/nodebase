@@ -48,9 +48,9 @@ func ptContext(r ChangeRule) string {
 // serialization ({t:"set",p:"payload.x",pt:"msg",to:"1",tot:"num"})
 // instead of the native {op,field,value} shape. Supported: set/delete/
 // move/change with str/num/json/bool/msg/env values, flow/global
-// context as source (tot) and target (pt), and the small jsonata
-// expression subset (see CompileRuleExpr). JSONata beyond the subset
-// and context move/change still fail loudly at deploy.
+// context as source (tot) and target (pt), and JSONata expressions
+// (see CompileJSONata). Context move/change still fails loudly at
+// deploy.
 func translateNRRules(n nodestore.NodeInterface, c *ChangeConfig) error {
 	raw, ok := n.GetData()["rules"].([]interface{})
 	if !ok {
@@ -95,10 +95,10 @@ func translateNRRules(n nodestore.NodeInterface, c *ChangeConfig) error {
 			case "", "str", "num", "json", "bool", "bin", "env", "flow", "global":
 				translated = append(translated, ChangeRule{Op: "set", Field: field, FieldType: fieldType, Value: to, ValueType: tot})
 			case "jsonata":
-				// The expression subset is validated at deploy so
-				// unsupported JSONata still fails loud.
-				if err := nodebase.CompileRuleExpr(to); err != nil {
-					return fmt.Errorf("change: rule %d uses unsupported JSONata expression %q: %w", i, to, err)
+				// The expression is validated at deploy so invalid
+				// JSONata still fails loud.
+				if err := nodebase.CompileJSONata(to); err != nil {
+					return fmt.Errorf("change: rule %d uses invalid JSONata expression %q: %w", i, to, err)
 				}
 				translated = append(translated, ChangeRule{Op: "set", Field: field, FieldType: fieldType, Value: to, ValueType: tot})
 			default:
@@ -279,7 +279,7 @@ type ChangeRule struct {
 	// — "str" (default), "num", "bool", "json", "msg" (read the
 	// value from a message property path, same as FromField), "env"
 	// (environment variable name), "flow"/"global" (context key), or
-	// "jsonata" (the supported expression subset).
+	// "jsonata" (a JSONata expression evaluated against the message).
 	ValueType string `json:"valueType,omitempty"`
 	// FromField, when set, takes the value from a message path
 	// (msg.topic, payload.user, …) instead of the literal Value —
@@ -388,7 +388,7 @@ func (n *ChangeNode) applySet(input nodestore.MessageInterface, rule ChangeRule)
 			v, _ := rc.ContextGet(rule.ValueType, rule.Value)
 			value = v
 		case "jsonata":
-			v, err := nodebase.EvalRuleExpr(rule.Value, rc)
+			v, err := nodebase.EvalJSONataCtx(rule.Value, input, rc)
 			if err == nil {
 				value = v
 			}

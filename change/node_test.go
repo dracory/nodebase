@@ -268,3 +268,48 @@ func TestChangeMoveToMetadata(t *testing.T) {
 		t.Fatalf("metadata move wrong: %v", msg.GetMetadata())
 	}
 }
+
+// TestChangeSetJSONata checks a tot:"jsonata" rule evaluates the
+// expression against the whole message (Node-RED's JSONata typedInput)
+// — payload paths, concatenation and metadata keys are in scope.
+func TestChangeSetJSONata(t *testing.T) {
+	msg := nodestore.NewMessage().SetPayload("Hello").SetMetadata(map[string]interface{}{"topic": "t"})
+	msg = run(t, &ChangeConfig{Rules: []ChangeRule{
+		{Op: "set", Field: "payload", Value: "payload & \", World!\"", ValueType: "jsonata"},
+		{Op: "set", Field: "msg.combo", Value: "topic & \"!\"", ValueType: "jsonata"},
+	}}, msg)
+	if msg.GetPayload() != "Hello, World!" {
+		t.Fatalf("jsonata payload wrong: %v", msg.GetPayload())
+	}
+	if msg.GetMetadata()["combo"] != "t!" {
+		t.Fatalf("jsonata metadata write wrong: %v", msg.GetMetadata())
+	}
+}
+
+// TestTranslateNRRulesJSONata checks the NR-shape {t:"set",tot:"jsonata"}
+// decodes into a set rule, and an uncompilable expression fails loud.
+func TestTranslateNRRulesJSONata(t *testing.T) {
+	n := nodestore.NewNode("c1", "change")
+	n.SetData(map[string]interface{}{
+		"rules": []interface{}{
+			map[string]interface{}{"t": "set", "p": "payload", "pt": "msg", "to": "payload * 2", "tot": "jsonata"},
+		},
+	})
+	c := &ChangeConfig{}
+	if err := translateNRRules(n, c); err != nil {
+		t.Fatalf("translate failed: %v", err)
+	}
+	if len(c.Rules) != 1 || c.Rules[0].ValueType != "jsonata" || c.Rules[0].Value != "payload * 2" {
+		t.Fatalf("translated rule wrong: %+v", c.Rules)
+	}
+
+	n2 := nodestore.NewNode("c2", "change")
+	n2.SetData(map[string]interface{}{
+		"rules": []interface{}{
+			map[string]interface{}{"t": "set", "p": "payload", "pt": "msg", "to": "payload & (", "tot": "jsonata"},
+		},
+	})
+	if err := translateNRRules(n2, &ChangeConfig{}); err == nil {
+		t.Fatal("invalid JSONata expression should fail translation")
+	}
+}

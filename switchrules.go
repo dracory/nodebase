@@ -30,10 +30,10 @@ func EvalSwitchRuleCtx(rule SwitchRule, payload nodestore.MessageInterface, rc *
 	case rule.PropertyType == "flow" || rule.PropertyType == "global":
 		value, found = rc.ContextGet(rule.PropertyType, rule.Property)
 	case rule.PropertyType == "jsonata":
-		// The switch value is a sequence-expression evaluated against
+		// The switch value is a JSONata expression evaluated against
 		// the whole message (Node-RED propertyType "jsonata").
 		if payload != nil {
-			if v, err := EvalSeqExpr(rule.Property, MessageMap(payload), nil); err == nil && v != nil {
+			if v, err := EvalJSONataCtx(rule.Property, payload, rc); err == nil && v != nil {
 				value, found = v, true
 			}
 		}
@@ -94,6 +94,12 @@ func EvalSwitchRuleCtx(rule SwitchRule, payload nodestore.MessageInterface, rc *
 		// node gives it real semantics — an else output only receives
 		// messages no other rule claimed.
 		return true
+	case "jsonata_exp":
+		// Node-RED's jsonata_exp: the rule value is a JSONata
+		// expression evaluated against the message; the rule matches
+		// iff the result is exactly true.
+		b, ok := expected.(bool)
+		return ok && b
 	case "btwn":
 		// Inclusive range check against Value and Value2.
 		return found &&
@@ -314,6 +320,14 @@ func resolveRuleValue(value, valueType string, payload nodestore.MessageInterfac
 		return v
 	case "flow", "global":
 		v, _ := rc.ContextGet(valueType, value)
+		return v
+	case "jsonata":
+		// The comparison value is a JSONata expression evaluated
+		// against the message — Node-RED's vt:"jsonata" typedInput.
+		v, err := EvalJSONataCtx(value, payload, rc)
+		if err != nil {
+			return nil
+		}
 		return v
 	case "num":
 		if f, ok := ParseNumericString(value); ok {

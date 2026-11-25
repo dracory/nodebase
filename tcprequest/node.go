@@ -84,8 +84,7 @@ var schema = map[string]interface{}{
 		"splitc": map[string]interface{}{
 			"type":        "string",
 			"title":       "Splitc",
-			"description": "Node-RED close parameter: milliseconds (time), delimiter character (char) or byte count (count)",
-			"showIf":      map[string]interface{}{"out": []string{"time", "char", "count"}},
+			"description": "Node-RED close parameter for time/char/count: milliseconds, delimiter character or byte count",
 		},
 		"mode": map[string]interface{}{
 			"type":  "string",

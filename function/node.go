@@ -48,23 +48,29 @@ var schema = map[string]interface{}{
 	"type": "object",
 	"properties": map[string]interface{}{
 		"func": map[string]interface{}{
-			"type":        "string",
-			"format":      "textarea",
-			"title":       "Function (JavaScript)",
-			"description": "JavaScript body over msg — return msg to pass it on, node.send([m1,m2]) for multi-output, node.error(str) to raise",
-			"default":     "return msg;",
+			"type":         "string",
+			"format":       "code",
+			"codeTab":      "On Message",
+			"codeTabOrder": 2,
+			"title":        "Function (JavaScript)",
+			"description":  "JavaScript body over msg — return msg to pass it on, node.send([m1,m2]) for multi-output, node.error(str) to raise",
+			"default":      "return msg;",
 		},
 		"initialize": map[string]interface{}{
-			"type":        "string",
-			"format":      "textarea",
-			"title":       "On Start (JavaScript)",
-			"description": "Node-RED setup code — runs once when the node activates; a returned promise is awaited before messages flow",
+			"type":         "string",
+			"format":       "code",
+			"codeTab":      "On Start",
+			"codeTabOrder": 1,
+			"title":        "On Start (JavaScript)",
+			"description":  "Node-RED setup code — runs once when the node activates; a returned promise is awaited before messages flow",
 		},
 		"finalize": map[string]interface{}{
-			"type":        "string",
-			"format":      "textarea",
-			"title":       "On Stop (JavaScript)",
-			"description": "Node-RED close code — runs when the node stops",
+			"type":         "string",
+			"format":       "code",
+			"codeTab":      "On Stop",
+			"codeTabOrder": 3,
+			"title":        "On Stop (JavaScript)",
+			"description":  "Node-RED close code — runs when the node stops",
 		},
 		"outputs": map[string]interface{}{
 			"type":        "integer",
@@ -129,14 +135,19 @@ type scriptTimer struct {
 // callback) serializes on mu. A session closes when the run finished
 // and all timers drained, or when the node stops.
 type scriptSession struct {
-	vm     *goja.Runtime
-	mu     sync.Mutex
-	n      *FunctionNode
-	st     *functionState
-	timers map[int64]*scriptTimer
-	nextID int64
-	runDone bool
-	closed     chan struct{}
+	vm *goja.Runtime
+	// vmMu serializes every VM entry — the run itself and each timer
+	// callback. It is NOT the registry lock: setTimeout registers
+	// from inside a run already holding vmMu, so the timer map has
+	// its own mutex.
+	vmMu      sync.Mutex
+	timersMu  sync.Mutex
+	n         *FunctionNode
+	st        *functionState
+	timers    map[int64]*scriptTimer
+	nextID    int64
+	runDone   bool
+	closed    chan struct{}
 	closeOnce sync.Once
 }
 
@@ -168,14 +179,14 @@ func (s *scriptSession) close() {
 // under the session mutex — any sends it makes go through the async
 // path because the executor flipped asyncMode once the run finished.
 func (s *scriptSession) addTimer(fn goja.Callable, delay time.Duration) int64 {
-	s.mu.Lock()
+	s.timersMu.Lock()
 	s.nextID++
 	id := s.nextID
 	if s.timers == nil {
 		s.timers = map[int64]*scriptTimer{}
 	}
 	s.timers[id] = &scriptTimer{callable: fn}
-	s.mu.Unlock()
+	s.timersMu.Unlock()
 
 	s.st.sessMu.Lock()
 	if s.st.sessions == nil {
@@ -190,16 +201,16 @@ func (s *scriptSession) addTimer(fn goja.Callable, delay time.Duration) int64 {
 
 // clearTimer cancels a pending timer (clearTimeout).
 func (s *scriptSession) clearTimer(id int64) {
-	s.mu.Lock()
+	s.timersMu.Lock()
 	if t, ok := s.timers[id]; ok {
 		t.cancelled.Store(true)
 	}
-	s.mu.Unlock()
+	s.timersMu.Unlock()
 }
 
 // runTimer waits for the delay then invokes the callback on the VM.
-// The callback executes under mu so it never overlaps RunProgram or a
-// sibling timer; promise jobs queued by it drain on goja's leave().
+// The callback executes under vmMu so it never overlaps RunProgram or
+// a sibling timer; promise jobs queued by it drain on goja's leave().
 func (s *scriptSession) runTimer(id int64, delay time.Duration) {
 	if delay > 0 {
 		t := time.NewTimer(delay)
@@ -211,10 +222,12 @@ func (s *scriptSession) runTimer(id int64, delay time.Duration) {
 			return
 		}
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.vmMu.Lock()
+	defer s.vmMu.Unlock()
 	defer s.finishTimer(id)
+	s.timersMu.Lock()
 	t, ok := s.timers[id]
+	s.timersMu.Unlock()
 	if !ok || t.cancelled.Load() || s.isClosed() {
 		return
 	}
@@ -226,8 +239,12 @@ func (s *scriptSession) runTimer(id int64, delay time.Duration) {
 // finishTimer removes a timer; when the run is over and no timers
 // remain the session closes itself.
 func (s *scriptSession) finishTimer(id int64) {
+	s.timersMu.Lock()
 	delete(s.timers, id)
-	if len(s.timers) == 0 && s.runDone {
+	empty := len(s.timers) == 0
+	done := s.runDone
+	s.timersMu.Unlock()
+	if empty && done {
 		s.close()
 	}
 }
@@ -236,21 +253,20 @@ func (s *scriptSession) finishTimer(id int64) {
 // the session closes immediately (the caller returns the VM to the
 // pool in that case — hasTimers() stays false).
 func (s *scriptSession) endRun() {
-	s.mu.Lock()
+	s.timersMu.Lock()
 	s.runDone = true
-	if len(s.timers) == 0 {
-		s.mu.Unlock()
+	empty := len(s.timers) == 0
+	s.timersMu.Unlock()
+	if empty {
 		s.close()
-		return
 	}
-	s.mu.Unlock()
 }
 
 // hasTimers reports whether the script scheduled callbacks — such VMs
 // stay with the session and are never returned to the pool.
 func (s *scriptSession) hasTimers() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.timersMu.Lock()
+	defer s.timersMu.Unlock()
 	return len(s.timers) > 0
 }
 
@@ -394,9 +410,9 @@ func (n *FunctionNode) Execute(ctx context.Context, input nodestore.MessageInter
 	// during the run serialize behind it.
 	runDone := make(chan error, 1)
 	go func() {
-		sess.mu.Lock()
+		sess.vmMu.Lock()
 		_, err := vm.RunProgram(prog)
-		sess.mu.Unlock()
+		sess.vmMu.Unlock()
 		runDone <- err
 	}()
 
@@ -720,7 +736,7 @@ func (n *FunctionNode) injectGlobals(vm *goja.Runtime, input nodestore.MessageIn
 
 	// Node-RED timer surface: goja has no event loop, so timers are
 	// host-provided — each callback runs on this session's VM after
-	// its delay, serialized with the script run via sess.mu.
+	// its delay, serialized with the script run via sess.vmMu.
 	if err := vm.Set("setTimeout", func(call goja.FunctionCall) goja.Value {
 		if n.sess == nil || len(call.Arguments) == 0 {
 			return goja.Undefined()
@@ -1086,10 +1102,10 @@ func (n *FunctionNode) runLifecycleScript(ctx context.Context, key, source strin
 	if err != nil {
 		return err
 	}
-	sess.mu.Lock()
+	sess.vmMu.Lock()
 	_, runErr := vm.RunProgram(prog)
 	result := vm.Get("__result")
-	sess.mu.Unlock()
+	sess.vmMu.Unlock()
 	if runErr != nil {
 		return fmt.Errorf("function script error: %w", runErr)
 	}
@@ -1101,9 +1117,9 @@ func (n *FunctionNode) runLifecycleScript(ctx context.Context, key, source strin
 		return nil
 	}
 	for {
-		sess.mu.Lock()
+		sess.vmMu.Lock()
 		state := promise.State()
-		sess.mu.Unlock()
+		sess.vmMu.Unlock()
 		switch state {
 		case goja.PromiseStateFulfilled:
 			return nil

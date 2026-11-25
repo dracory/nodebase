@@ -138,3 +138,71 @@ func TestSwitchValidate(t *testing.T) {
 		}
 	}
 }
+
+// TestTranslateNRRulesJSONataExp checks a Node-RED "jsonata_exp" rule
+// decodes into the native op carrying the raw expression, and that it
+// routes on the expression's boolean result (=== true per Node-RED).
+func TestTranslateNRRulesJSONataExp(t *testing.T) {
+	n := nodestore.NewNode("n1", "switch")
+	n.SetData(map[string]interface{}{
+		"property":     "payload",
+		"propertyType": "msg",
+		"rules": []interface{}{
+			map[string]interface{}{"t": "jsonata_exp", "v": "(payload % 2) = 0", "vt": "jsonata"},
+			map[string]interface{}{"t": "jsonata_exp", "v": "(payload % 2) = 1", "vt": "jsonata"},
+		},
+	})
+	c := &SwitchConfig{}
+	if err := translateNRRules(n, c); err != nil {
+		t.Fatalf("translate failed: %v", err)
+	}
+	if len(c.Rules) != 2 || c.Rules[0].Op != "jsonata_exp" || c.Rules[0].Value != "(payload % 2) = 0" {
+		t.Fatalf("translated rules wrong: %+v", c.Rules)
+	}
+	node := NewSwitchNode(n, c)
+	if ports := node.SelectPorts(msg(8.0), nil); len(ports) != 1 || ports[0] != "output_1" {
+		t.Fatalf("even payload should route output_1: %v", ports)
+	}
+	if ports := node.SelectPorts(msg(7.0), nil); len(ports) != 1 || ports[0] != "output_2" {
+		t.Fatalf("odd payload should route output_2: %v", ports)
+	}
+	// A non-boolean expression result never matches (=== true).
+	c2 := &SwitchConfig{Rules: []nodebase.SwitchRule{
+		{Op: "jsonata_exp", Value: `"truthy string"`, ValueType: "jsonata"},
+	}}
+	if ports := NewSwitchNode(n, c2).SelectPorts(msg(nil), nil); len(ports) != 0 {
+		t.Fatalf("non-boolean result must not match: %v", ports)
+	}
+}
+
+// TestTranslateNRRulesJSONataExpInvalid checks an uncompilable
+// jsonata_exp expression still fails loud at deploy.
+func TestTranslateNRRulesJSONataExpInvalid(t *testing.T) {
+	n := nodestore.NewNode("n1", "switch")
+	n.SetData(map[string]interface{}{
+		"rules": []interface{}{
+			map[string]interface{}{"t": "jsonata_exp", "v": "payload & (", "vt": "jsonata"},
+		},
+	})
+	if err := translateNRRules(n, &SwitchConfig{}); err == nil {
+		t.Fatal("invalid JSONata expression should fail translation")
+	}
+}
+
+// TestSwitchJSONataValueType checks a vt:"jsonata" comparison value is
+// evaluated against the message for ordinary ops — the match proves
+// the expression ran (a literal "payload" string could never equal 6).
+func TestSwitchJSONataValueType(t *testing.T) {
+	node := newNode(&SwitchConfig{Rules: []nodebase.SwitchRule{
+		{Property: "", Op: "eq", Value: "payload", ValueType: "jsonata"},
+	}})
+	if ports := node.SelectPorts(msg(6.0), nil); len(ports) != 1 || ports[0] != "output_1" {
+		t.Fatalf("payload 6 should equal the evaluated expression: %v", ports)
+	}
+	node2 := newNode(&SwitchConfig{Rules: []nodebase.SwitchRule{
+		{Property: "", Op: "eq", Value: "payload - 1", ValueType: "jsonata"},
+	}})
+	if ports := node2.SelectPorts(msg(6.0), nil); len(ports) != 0 {
+		t.Fatalf("6 should not equal 6-1: %v", ports)
+	}
+}
