@@ -86,6 +86,9 @@ func TestTriggerRoundTrip(t *testing.T) {
 	if rec.Header().Get("X-Custom") != "v" {
 		t.Fatal("response header not propagated")
 	}
+	if ct := rec.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
+		t.Fatalf("string response content type wrong: %q", ct)
+	}
 	if rec.Body.String() != "done" {
 		t.Fatalf("body wrong: %q", rec.Body.String())
 	}
@@ -297,6 +300,9 @@ func TestTriggerJSONResponse(t *testing.T) {
 	host.responseCh <- nodestore.NewMessage().SetPayload(map[string]interface{}{"ok": true})
 	rec := httptest.NewRecorder()
 	n.handleRequest(rec, httptest.NewRequest(http.MethodGet, "/x", nil))
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("json response content type wrong: %q", ct)
+	}
 	var body map[string]interface{}
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil || body["ok"] != true {
 		t.Fatalf("json response wrong: %v", rec.Body.String())
