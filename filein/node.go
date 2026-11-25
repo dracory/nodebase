@@ -136,8 +136,9 @@ func (n *FileInNode) Execute(ctx context.Context, input nodestore.MessageInterfa
 	n.partCh = ""
 	switch n.config.Format {
 	case "lines":
-		text := strings.TrimSuffix(string(content), "\n")
-		text = strings.TrimSuffix(text, "\r")
+		// Split on \n keeping the trailing empty line a final newline
+		// produces — Node-RED emits it as the last sequence part.
+		text := string(content)
 		if text != "" {
 			for _, line := range strings.Split(text, "\n") {
 				n.chunks = append(n.chunks, strings.TrimSuffix(line, "\r"))
@@ -180,7 +181,9 @@ func (n *FileInNode) Expand(output nodestore.MessageInterface) []nodestore.Messa
 	}
 	partType := "stream"
 	if n.config.Format == "lines" {
-		partType = "lines"
+		// Node-RED tags line streams as parts.type "string" with the
+		// delimiter in parts.ch so a join reassembles them as text.
+		partType = "string"
 	}
 	groupID := fmt.Sprintf("parts-%d", atomic.AddInt64(&fileGroupSeq, 1))
 	count := len(n.chunks)

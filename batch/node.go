@@ -4,11 +4,13 @@ package batch
 import (
 	"context"
 	_ "embed"
+	"encoding/json"
 	"fmt"
-	"github.com/dracory/nodebase"
-	nodestore "github.com/dracory/nodestore"
 	"sync"
 	"time"
+
+	"github.com/dracory/nodebase"
+	nodestore "github.com/dracory/nodestore"
 )
 
 //go:embed editor.html
@@ -28,7 +30,7 @@ func init() {
 		Descriptor: nodebase.NodeDescriptor{
 			Type:        "batch",
 			Name:        "Batch",
-			Description: "Groups incoming messages into batches",
+			Description: "Groups incoming messages into batch sequences",
 			Icon:        "copy",
 			Category:    "Flow Control",
 			Set:         "core",
@@ -52,7 +54,7 @@ var schema = map[string]interface{}{
 		"count": map[string]interface{}{
 			"type":        "integer",
 			"title":       "Count",
-			"description": "count mode: number of messages per batch",
+			"description": "count mode: number of messages per batch sequence",
 			"default":     10,
 		},
 		"overlap": map[string]interface{}{
@@ -67,21 +69,37 @@ var schema = map[string]interface{}{
 			"description": "interval mode: window length",
 			"default":     10,
 		},
+		"allowEmptySequence": map[string]interface{}{
+			"type":        "boolean",
+			"title":       "Allow Empty Sequence",
+			"description": "interval mode: emit an empty sequence message on a window with no input",
+			"default":     false,
+		},
 		"honourParts": map[string]interface{}{
 			"type":        "boolean",
 			"title":       "Honour Parts",
-			"description": "count mode: keep separate buffers per parts sequence",
+			"description": "count mode: flush when an incoming parts sequence completes",
 			"default":     false,
+		},
+		"topics": map[string]interface{}{
+			"type":        "array",
+			"title":       "Topics",
+			"description": "concat mode: topics whose sequences are concatenated, in output order",
+			"items": map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{"topic": map[string]interface{}{"type": "string"}},
+			},
 		},
 	},
 }
 
 // BatchConfig holds configuration for the batch node — the Node-RED
-// batch equivalent. Groups incoming messages into batches.
+// batch equivalent. Buffers messages and re-emits them as a parts
+// sequence (count/interval) or concatenates topic sequences (concat).
 type BatchConfig struct {
 	// Mode selects grouping: "count" batches every N messages,
-	// "interval" batches everything arriving within a time window,
-	// "concat" concatenates a parts sequence into one message
+	// "interval" flushes everything buffered every Interval seconds,
+	// "concat" merges one complete parts sequence per configured topic
 	Mode string `json:"mode"`
 	// Count is the batch size for "count" mode
 	Count int `json:"count"`
@@ -90,26 +108,55 @@ type BatchConfig struct {
 	Overlap int `json:"overlap"`
 	// Interval is the window length in seconds for "interval" mode
 	Interval float64 `json:"interval"`
-	// HonourParts keeps separate buffers per parts.id in count mode
+	// AllowEmptySequence emits an empty sequence message when an
+	// interval window closes with nothing buffered
+	AllowEmptySequence bool `json:"allowEmptySequence"`
+	// HonourParts flushes a count-mode batch early when an incoming
+	// parts sequence completes (parts.index+1 == parts.count)
 	HonourParts bool `json:"honourParts"`
+	// Topics lists the concat-mode topics in output order; each entry
+	// is {"topic": "..."} as serialized by Node-RED
+	Topics []struct {
+		Topic string `json:"topic"`
+	} `json:"topics"`
 }
 
 // batchState is the per-node buffered state stored on the host
-// (executors are rebuilt per message). bufs holds count-mode buffers
-// keyed by parts id ("" when honourParts is off or absent); window
-// holds the interval-mode buffer plus its flush timer; parts holds
-// concat-mode groups.
+// (executors are rebuilt per message).
 type batchState struct {
-	mu     sync.Mutex
-	bufs   map[string][]nodestore.MessageInterface
-	window []nodestore.MessageInterface
-	timer  *time.Timer
-	parts  map[string][]nodestore.MessageInterface
+	mu sync.Mutex
+
+	// count mode
+	pending []nodestore.MessageInterface
+	eof     bool
+
+	// interval mode
+	window   []nodestore.MessageInterface
+	interval bool // ticker goroutine started
+
+	// concat mode: topic -> gid -> group (gids preserves arrival order)
+	topics map[string]*topicPending
+
+	// emission FIFO: sequences drain in order on one worker goroutine
+	queue   [][]nodestore.MessageInterface
+	emitRun bool
 }
 
-// BatchNode groups incoming messages into batches. It drops (returns
-// nil) buffered messages; completed batches go downstream as a single
-// message whose Data is an array of the batched payloads.
+// topicPending buffers one topic's sequence groups in gid order.
+type topicPending struct {
+	gids   []string
+	groups map[string]*topicGroup
+}
+
+// topicGroup is one parts sequence buffered under a topic.
+type topicGroup struct {
+	msgs  []nodestore.MessageInterface
+	count int // -1 until a parts.count is seen
+}
+
+// BatchNode re-emits buffered messages as a parts sequence. Buffered
+// messages are dropped (nil return); completed batches go downstream
+// asynchronously through the node's outgoing edges.
 type BatchNode struct {
 	*nodebase.BaseNode
 	config     *BatchConfig
@@ -137,10 +184,14 @@ func (n *BatchNode) Validate() error {
 	default:
 		return fmt.Errorf("batch: unsupported mode %q", n.config.Mode)
 	}
+	if n.mode() == "count" && n.config.Count > 0 && n.config.Overlap >= n.config.Count {
+		return fmt.Errorf("batch: overlap (%d) must be less than count (%d)", n.config.Overlap, n.config.Count)
+	}
 	return nil
 }
 
-// Execute buffers and emits a batch message when a batch completes.
+// Execute buffers the message and, when a batch completes, emits the
+// sequence asynchronously — the triggering message itself is dropped.
 func (n *BatchNode) Execute(ctx context.Context, input nodestore.MessageInterface) (nodestore.MessageInterface, error) {
 	switch n.mode() {
 	case "interval":
@@ -152,125 +203,303 @@ func (n *BatchNode) Execute(ctx context.Context, input nodestore.MessageInterfac
 	}
 }
 
-// executeCount buffers messages and emits a batch every Count
-// messages, keeping the last Overlap messages for the next batch.
-// With honourParts the buffer is keyed by the message's parts.id.
+// --- count mode -----------------------------------------------------
+
+// executeCount buffers messages and sends the batch sequence every
+// Count messages (or when honourParts sees a sequence end), keeping
+// the last Overlap messages for the next batch.
 func (n *BatchNode) executeCount(input nodestore.MessageInterface) (nodestore.MessageInterface, error) {
 	count := n.config.Count
 	if count <= 0 {
 		count = 1
 	}
-	key := ""
+
+	state := n.state()
+	state.mu.Lock()
+	if _, ok := input.GetMetadata()["reset"]; ok {
+		state.pending = nil
+		state.eof = false
+		state.mu.Unlock()
+		return nil, nil
+	}
 	if n.config.HonourParts {
 		if parts, ok := input.GetMetadata()["parts"].(map[string]interface{}); ok {
-			key, _ = parts["id"].(string)
+			idx, _ := nodebase.ToFloat(parts["index"])
+			cnt, _ := nodebase.ToFloat(parts["count"])
+			if int(idx)+1 == int(cnt) {
+				state.eof = true
+			}
 		}
 	}
-
-	state := n.state()
-	state.mu.Lock()
-	buf := append(state.bufs[key], input)
-	if len(buf) < count {
-		state.bufs[key] = buf
+	state.pending = append(state.pending, input)
+	if len(state.pending) != count && !state.eof {
 		state.mu.Unlock()
-		return nil, nil // keep buffering — drop this message
+		return nil, nil // keep buffering
 	}
-
-	batch := buf
+	queue := state.pending
 	overlap := n.config.Overlap
-	if overlap > 0 && overlap < len(buf) {
+	if overlap > 0 && overlap < len(queue) {
 		rest := make([]nodestore.MessageInterface, overlap)
-		copy(rest, buf[len(buf)-overlap:])
-		state.bufs[key] = rest
+		copy(rest, queue[len(queue)-overlap:])
+		state.pending = rest
 	} else {
-		delete(state.bufs, key)
+		state.pending = nil
 	}
+	state.eof = false
 	state.mu.Unlock()
 
-	return batchMessage(batch), nil
+	n.emitSequence(queue)
+	return nil, nil
 }
 
-// executeInterval buffers messages arriving within each Interval
-// window; the flush timer emits the batch asynchronously.
-func (n *BatchNode) executeInterval(input nodestore.MessageInterface) (nodestore.MessageInterface, error) {
-	interval := n.config.Interval
-	if interval <= 0 {
-		interval = 1
-	}
+// --- interval mode --------------------------------------------------
 
+// executeInterval buffers messages; a ticker started on the first
+// message flushes the window every Interval seconds.
+func (n *BatchNode) executeInterval(input nodestore.MessageInterface) (nodestore.MessageInterface, error) {
 	state := n.state()
 	state.mu.Lock()
-	state.window = append(state.window, input)
-	if state.timer == nil {
-		state.timer = time.AfterFunc(
-			time.Duration(interval*float64(time.Second)),
-			n.flushInterval,
-		)
+	if _, ok := input.GetMetadata()["reset"]; ok {
+		state.window = nil
+		state.mu.Unlock()
+		return nil, nil
 	}
+	state.window = append(state.window, input)
+	started := state.interval
+	state.interval = true
 	state.mu.Unlock()
 
+	if !started {
+		go n.intervalLoop()
+	}
 	return nil, nil // buffered — flushed on window end
 }
 
-// flushInterval emits the buffered window as a single batch message.
+// intervalLoop flushes the buffered window on every tick, mirroring
+// Node-RED's setInterval.
+func (n *BatchNode) intervalLoop() {
+	interval := n.config.Interval
+	if interval <= 0 {
+		interval = 10 // Node-RED's editor default when unset
+	}
+	ticker := time.NewTicker(time.Duration(interval * float64(time.Second)))
+	defer ticker.Stop()
+	for range ticker.C {
+		n.flushInterval()
+	}
+}
+
+// flushInterval emits the buffered window as a parts sequence — or an
+// empty sequence when allowEmptySequence is set.
 func (n *BatchNode) flushInterval() {
 	state := n.state()
 	state.mu.Lock()
-	batch := state.window
+	window := state.window
 	state.window = nil
-	state.timer = nil
 	state.mu.Unlock()
 
-	if len(batch) == 0 {
+	if len(window) == 0 {
+		if n.config.AllowEmptySequence {
+			msg := nodestore.NewMessage().SetMetadata(map[string]interface{}{
+				"parts": map[string]interface{}{
+					"id":    newID(),
+					"index": 0,
+					"count": 1,
+				},
+			})
+			n.emitSequence([]nodestore.MessageInterface{msg})
+		}
 		return
 	}
-	n.emitDownstream(batchMessage(batch))
+	n.emitSequence(window)
 }
 
-// executeConcat buffers a parts sequence until parts.count messages
-// arrive, then emits one message whose Data is the concatenated
-// payloads (arrays are flattened, other payloads collected).
+// --- concat mode ----------------------------------------------------
+
+// executeConcat buffers parts sequences per (topic, parts.id); when
+// every configured topic has a complete sequence the messages are
+// concatenated in topic order and re-emitted as one sequence.
 func (n *BatchNode) executeConcat(input nodestore.MessageInterface) (nodestore.MessageInterface, error) {
+	topics := n.topicList()
+	topic, _ := input.GetMetadata()["topic"].(string)
+	if !containsString(topics, topic) {
+		return nil, nil // topic not configured — drop
+	}
 	parts, ok := input.GetMetadata()["parts"].(map[string]interface{})
-	if !ok {
-		return input, nil // no sequence metadata — pass through
+	if !ok || parts["id"] == nil || parts["index"] == nil || parts["count"] == nil {
+		return nil, nil // Node-RED errors "no-parts" — dropped
 	}
-	id, _ := parts["id"].(string)
-	count := 0
-	if c, err := nodebase.ToFloat(parts["count"]); err == nil {
-		count = int(c)
-	}
-	if count <= 0 {
-		return input, nil
-	}
+	gid, _ := parts["id"].(string)
+	count, _ := nodebase.ToFloat(parts["count"])
 
 	state := n.state()
 	state.mu.Lock()
-	group := append(state.parts[id], input)
-	if len(group) < count {
-		state.parts[id] = group
+	if _, ok := input.GetMetadata()["reset"]; ok {
+		state.topics = map[string]*topicPending{}
 		state.mu.Unlock()
-		return nil, nil // keep buffering — drop this message
+		return nil, nil
 	}
-	delete(state.parts, id)
+	tp := state.topics[topic]
+	if tp == nil {
+		tp = &topicPending{groups: map[string]*topicGroup{}}
+		state.topics[topic] = tp
+	}
+	g := tp.groups[gid]
+	if g == nil {
+		g = &topicGroup{count: -1}
+		tp.groups[gid] = g
+		tp.gids = append(tp.gids, gid)
+	}
+	g.msgs = append(g.msgs, input)
+	if g.count < 0 {
+		g.count = int(count)
+	}
+	combined := tryConcatLocked(state, topics)
 	state.mu.Unlock()
 
-	return concatMessage(group), nil
+	if combined == nil {
+		return nil, nil // still waiting on other topics
+	}
+	n.emitSequence(combined)
+	return nil, nil
 }
 
-// emitDownstream injects a payload into the edges downstream of this
-// node, fire-and-forget (same as inject.fire).
-func (n *BatchNode) emitDownstream(payload nodestore.MessageInterface) {
-	_ = n.host.Emit(n.workflowID, n.GetID(), payload, nil)
+// tryConcatLocked returns the concatenated messages (in topics order)
+// when every configured topic's first group is complete — removing the
+// groups — or nil while any topic is incomplete. Like Node-RED, the
+// messages are collected before anything is removed, so a duplicated
+// topic concatenates the same group twice.
+func tryConcatLocked(state *batchState, topics []string) []nodestore.MessageInterface {
+	for _, topic := range topics {
+		tp := state.topics[topic]
+		if tp == nil || len(tp.gids) == 0 {
+			return nil
+		}
+		g := tp.groups[tp.gids[0]]
+		if g == nil || g.count < 0 || len(g.msgs) < g.count {
+			return nil
+		}
+	}
+	var out []nodestore.MessageInterface
+	for _, topic := range topics {
+		tp := state.topics[topic]
+		out = append(out, tp.groups[tp.gids[0]].msgs...)
+	}
+	for _, topic := range topics {
+		tp := state.topics[topic]
+		if len(tp.gids) == 0 {
+			continue // duplicate topic already removed
+		}
+		delete(tp.groups, tp.gids[0])
+		tp.gids = tp.gids[1:]
+	}
+	return out
+}
+
+// --- shared ---------------------------------------------------------
+
+// emitSequence renumbers each message's parts (id = the first
+// message's id, index, count — preserving other parts fields like
+// type) and replays them through the downstream edges in order, like
+// Node-RED's send_msgs. A single goroutine keeps the sequence ordered.
+func (n *BatchNode) emitSequence(msgs []nodestore.MessageInterface) {
+	if len(msgs) == 0 {
+		return
+	}
+	emitted := make([]nodestore.MessageInterface, 0, len(msgs))
+	// Unique sequence id per emitted batch — the source messages may
+	// share a message id (function node.send clones), and a reused id
+	// would merge distinct batches inside a downstream join.
+	msgID := fmt.Sprintf("batch-%s-%d", n.GetID(), nodebase.NextGroupSeq())
+	for i, msg := range msgs {
+		em := nodestore.NewMessage().SetID(msg.GetID()).SetPayload(msg.GetPayload()).SetTimestamp(msg.GetTimestamp())
+		if err := msg.GetError(); err != nil {
+			em.SetError(*err)
+		}
+		em.SetMetadata(deepCopyMetadata(msg.GetMetadata()))
+		if em.GetMetadata() == nil {
+			em.SetMetadata(map[string]interface{}{})
+		}
+		parts, _ := em.GetMetadata()["parts"].(map[string]interface{})
+		if parts == nil {
+			parts = map[string]interface{}{}
+			em.GetMetadata()["parts"] = parts
+		}
+		parts["id"] = msgID
+		parts["index"] = i
+		parts["count"] = len(msgs)
+		emitted = append(emitted, em)
+	}
+	// Serialize emissions on the node's FIFO worker — overlapping
+	// goroutines would interleave sequences at a downstream join.
+	state := n.state()
+	state.mu.Lock()
+	state.queue = append(state.queue, emitted)
+	if !state.emitRun {
+		state.emitRun = true
+		state.mu.Unlock()
+		go n.drainEmits()
+		return
+	}
+	state.mu.Unlock()
+}
+
+// drainEmits walks the emission queue FIFO until empty; each sequence
+// propagates fully (synchronous traverse per message) before the next.
+func (n *BatchNode) drainEmits() {
+	workflow, _ := n.host.RunningFlow(n.workflowID)
+	ctx := n.host.RunContext(n.workflowID)
+	state := n.state()
+	for {
+		state.mu.Lock()
+		if len(state.queue) == 0 {
+			state.emitRun = false
+			state.mu.Unlock()
+			return
+		}
+		seq := state.queue[0]
+		state.queue = state.queue[1:]
+		state.mu.Unlock()
+		if workflow == nil {
+			continue
+		}
+		for _, msg := range seq {
+			n.host.ExecuteDownstream(ctx, n.workflowID, n.GetID(), workflow, msg, nil)
+		}
+	}
+}
+
+// deepCopyMetadata copies a metadata map via JSON so nested maps
+// (parts) detach from the original — shallow copies leave them shared
+// and racy.
+func deepCopyMetadata(md map[string]interface{}) map[string]interface{} {
+	if md == nil {
+		return nil
+	}
+	raw, err := json.Marshal(md)
+	if err != nil {
+		return md
+	}
+	var out map[string]interface{}
+	if json.Unmarshal(raw, &out) != nil {
+		return md
+	}
+	return out
+}
+
+// topicList returns the configured concat topics in order.
+func (n *BatchNode) topicList() []string {
+	out := make([]string, 0, len(n.config.Topics))
+	for _, t := range n.config.Topics {
+		out = append(out, t.Topic)
+	}
+	return out
 }
 
 // state returns (creating if needed) the per-node buffered state.
 func (n *BatchNode) state() *batchState {
 	return n.host.GetOrCreateNodeState(n.workflowID, n.GetID(), func() interface{} {
-		return &batchState{
-			bufs:  map[string][]nodestore.MessageInterface{},
-			parts: map[string][]nodestore.MessageInterface{},
-		}
+		return &batchState{topics: map[string]*topicPending{}}
 	}).(*batchState)
 }
 
@@ -283,31 +512,17 @@ func (n *BatchNode) mode() string {
 	return "count"
 }
 
-// batchMessage builds the batch output: a clone of the last message
-// whose Data is an array of each buffered message's Data.
-func batchMessage(msgs []nodestore.MessageInterface) nodestore.MessageInterface {
-	arr := make([]interface{}, 0, len(msgs))
-	for _, m := range msgs {
-		arr = append(arr, m.GetPayload())
-	}
-	out := nodebase.ClonePayload(msgs[len(msgs)-1])
-	out.SetPayload(arr)
-	return out
+// newID returns a sequence id for synthetic messages.
+func newID() string {
+	return fmt.Sprintf("%x", time.Now().UnixNano())
 }
 
-// concatMessage builds the concat output: a clone of the last message
-// whose Data flattens array payloads into one array (or collects
-// non-array payloads into an array).
-func concatMessage(msgs []nodestore.MessageInterface) nodestore.MessageInterface {
-	arr := make([]interface{}, 0, len(msgs))
-	for _, m := range msgs {
-		if chunk, ok := m.GetPayload().([]interface{}); ok {
-			arr = append(arr, chunk...)
-		} else {
-			arr = append(arr, m.GetPayload())
+// containsString reports whether list contains s.
+func containsString(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
 		}
 	}
-	out := nodebase.ClonePayload(msgs[len(msgs)-1])
-	out.SetPayload(arr)
-	return out
+	return false
 }

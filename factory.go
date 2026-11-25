@@ -16,7 +16,18 @@ func DecodeConfig(node nodestore.NodeInterface, cfg interface{}) error {
 	// Node-RED serializes some numeric/boolean config fields as strings
 	// ("30", "false") — coerce them to the struct's declared types so
 	// imported flows decode the same way editor-produced ones do.
-	data := node.GetData()
+	// Work on a deep copy: GetData() returns the node's shared internal
+	// map, and mutating it in place races with concurrent readers
+	// (name/status lookups, inbox config resolution, other decodes).
+	source := node.GetData()
+	frozen, err := json.Marshal(source)
+	if err != nil {
+		return fmt.Errorf("invalid %s node data: %w", node.GetType(), err)
+	}
+	data := map[string]any{}
+	if err := json.Unmarshal(frozen, &data); err != nil {
+		return fmt.Errorf("invalid %s node data: %w", node.GetType(), err)
+	}
 	coerceConfigStrings(data, reflect.TypeOf(cfg))
 	raw, err := json.Marshal(data)
 	if err != nil {

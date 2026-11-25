@@ -233,12 +233,12 @@ func (n *FunctionNode) SelectPorts(input, output nodestore.MessageInterface) []s
 	return n.firstPorts
 }
 
-// dispatch resolves the collected sends into the host's single-return
-// model: the first send on the lowest-indexed port becomes Execute's
-// return value (routed by SelectPorts to that port's edges); every
-// other send — including additional messages on the same port — is
-// emitted fire-and-forget, scoped to its own port, so each port's
-// downstream receives its own payload.
+// dispatch resolves the collected sends. When the host exposes the
+// running flow, every send is replayed downstream in call order from
+// a single goroutine — Node-RED's node.send semantics where each send
+// propagates before the next — and Execute returns nil. Hosts without
+// a running flow (unit tests) fall back to the legacy split: the
+// first send on the lowest-indexed port returns and the rest Emit.
 func (n *FunctionNode) dispatch() (nodestore.MessageInterface, error) {
 	if len(n.sends) == 0 {
 		return nil, nil // drop
@@ -252,26 +252,94 @@ func (n *FunctionNode) dispatch() (nodestore.MessageInterface, error) {
 		if p < 0 {
 			p = 0 // auto → output_1
 		}
-		if _, seen := firstByPort[p]; !seen {
-			firstByPort[p] = i
-			n.firstPorts = append(n.firstPorts, portKey(p))
-			if p < retPort {
-				retPort = p
-				ret = s.msg
-			}
+		if _, seen := firstByPort[p]; seen {
 			continue
 		}
-		// Extra message on an already-seen port: emit port-scoped.
-		_ = n.host.Emit(n.workflowID, n.GetID(), s.msg, []string{portKey(p)})
-	}
-	// First messages on ports other than the returned one get their own
-	// payload emitted port-scoped so they aren't shadowed by the return.
-	for p, i := range firstByPort {
-		if p != retPort {
-			_ = n.host.Emit(n.workflowID, n.GetID(), n.sends[i].msg, []string{portKey(p)})
+		firstByPort[p] = i
+		n.firstPorts = append(n.firstPorts, portKey(p))
+		if p < retPort {
+			retPort = p
+			ret = s.msg
 		}
 	}
+
+	if workflow, ok := n.host.RunningFlow(n.workflowID); ok && workflow != nil {
+		// Ordered multi-send: enqueue on the node's shared FIFO worker
+		// so sends propagate in call order — both within one Execute
+		// and across separate invocations — through the synchronous
+		// downstream traversal. A downstream batch/join/sort then sees
+		// them in Node-RED's node.send order.
+		n.sendQueue().enqueue(sendsOf(n.sends), n, workflow)
+		return nil, nil
+	}
+
+	for i, s := range n.sends {
+		if i == firstByPort[retPort] {
+			continue
+		}
+		p := s.port
+		if p < 0 {
+			p = 0
+		}
+		_ = n.host.Emit(n.workflowID, n.GetID(), s.msg, []string{portKey(p)})
+	}
 	return ret, nil
+}
+
+// functionSendQueue serializes a node's asynchronous emissions: sends
+// are drained in enqueue order by a single worker, mirroring Node-RED
+// where each node.send propagates before the next is processed.
+type functionSendQueue struct {
+	mu      sync.Mutex
+	queue   []functionSend
+	running bool
+}
+
+// sendsOf copies the collected sends for queued emission.
+func sendsOf(sends []functionSend) []functionSend {
+	return append([]functionSend(nil), sends...)
+}
+
+// enqueue appends sends and starts the drain worker when idle.
+func (q *functionSendQueue) enqueue(sends []functionSend, n *FunctionNode, workflow nodestore.WorkflowInterface) {
+	q.mu.Lock()
+	q.queue = append(q.queue, sends...)
+	if q.running {
+		q.mu.Unlock()
+		return
+	}
+	q.running = true
+	q.mu.Unlock()
+	go q.drain(n, workflow)
+}
+
+// drain walks the queue FIFO until empty; each send propagates through
+// the synchronous downstream traversal before the next is dequeued.
+func (q *functionSendQueue) drain(n *FunctionNode, workflow nodestore.WorkflowInterface) {
+	ctx := n.host.RunContext(n.workflowID)
+	for {
+		q.mu.Lock()
+		if len(q.queue) == 0 {
+			q.running = false
+			q.mu.Unlock()
+			return
+		}
+		s := q.queue[0]
+		q.queue = q.queue[1:]
+		q.mu.Unlock()
+		p := s.port
+		if p < 0 {
+			p = 0
+		}
+		n.host.ExecuteDownstream(ctx, n.workflowID, n.GetID(), workflow, s.msg, []string{portKey(p)})
+	}
+}
+
+// sendQueue returns (creating if needed) the node's shared send queue.
+func (n *FunctionNode) sendQueue() *functionSendQueue {
+	return n.host.GetOrCreateNodeState(n.workflowID, n.GetID(), func() interface{} {
+		return &functionSendQueue{}
+	}).(*functionSendQueue)
 }
 
 // handleSend interprets a send argument (node.send call arg or the

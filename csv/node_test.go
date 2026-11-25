@@ -27,7 +27,7 @@ func TestCSVParseRows(t *testing.T) {
 	if len(parts) != 2 {
 		t.Fatalf("expected 2 rows, got %d", len(parts))
 	}
-	row, ok := parts[0].GetPayload().([]string)
+	row, ok := parts[0].GetPayload().([]interface{})
 	if !ok || row[0] != "a" || row[1] != "b" {
 		t.Fatalf("row payload wrong: %v", parts[0].GetPayload())
 	}
@@ -48,7 +48,8 @@ func TestCSVParseWithHeaders(t *testing.T) {
 		t.Fatalf("expected 1 row, got %d", len(parts))
 	}
 	m, ok := parts[0].GetPayload().(map[string]interface{})
-	if !ok || m["name"] != "alice" || m["age"] != "30" {
+	// parseStrings defaults to true (Node-RED semantics): "30" → 30
+	if !ok || m["name"] != "alice" || m["age"] != float64(30) {
 		t.Fatalf("header-keyed row wrong: %v", parts[0].GetPayload())
 	}
 }
@@ -98,7 +99,7 @@ func TestCSVPropertyPath(t *testing.T) {
 		t.Fatalf("expected 1 row, got %d", len(parts))
 	}
 	m := parts[0].GetPayload().(map[string]interface{})
-	row, ok := m["doc"].(map[string]interface{})["table"].([]string)
+	row, ok := m["doc"].(map[string]interface{})["table"].([]interface{})
 	if !ok || row[0] != "x" {
 		t.Fatalf("row written at wrong location: %v", m)
 	}

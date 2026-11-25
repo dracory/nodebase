@@ -173,7 +173,7 @@ func TestSortSeqNoParts(t *testing.T) {
 }
 
 func TestSortSeqByKey(t *testing.T) {
-	n, host := newNode(&SortConfig{Target: "seq", SeqKey: "rank"})
+	n, host := newNode(&SortConfig{TargetType: "seq", SeqKey: "payload.rank"})
 	ctx := context.Background()
 	mk := func(i int, rank float64) nodestore.MessageInterface {
 		m := nodestore.NewMessage().SetPayload(map[string]interface{}{"rank": rank})

@@ -1,7 +1,12 @@
 package batch
 
 // Pack-local unit tests for the batch node — count/concat/interval
-// modes, overlap, honourParts and validation, run against a fake host.
+// modes, overlap and validation, run against a fake host that captures
+// emitted sequence messages.
+//
+// Node-RED semantics: a completed batch is a *sequence* of the buffered
+// messages re-tagged with parts {id, index, count} — emitted via
+// ExecuteDownstream — not a single array message.
 
 import (
 	"context"
@@ -16,10 +21,10 @@ import (
 )
 
 // fakeHost implements nodebase.NodeHost with a state slot and an
-// emitted-message capture for the interval flush.
+// emitted-sequence capture (ExecuteDownstream records each message).
 type fakeHost struct {
 	states  map[string]interface{}
-	mu      sync.Mutex // guards emitted — the interval flush emits from a timer goroutine
+	mu      sync.Mutex // guards emitted — flushes emit from goroutines
 	emitted []nodestore.MessageInterface
 }
 
@@ -37,6 +42,15 @@ func (h *fakeHost) emittedMsgs() []nodestore.MessageInterface {
 	defer h.mu.Unlock()
 	return append([]nodestore.MessageInterface(nil), h.emitted...)
 }
+
+// waitFor blocks until n messages were emitted or the deadline passes.
+func (h *fakeHost) waitFor(n int, timeout time.Duration) []nodestore.MessageInterface {
+	deadline := time.Now().Add(timeout)
+	for len(h.emittedMsgs()) < n && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	return h.emittedMsgs()
+}
 func (h *fakeHost) EmitEvent(wf, nodeID, name, level, message string) {}
 func (h *fakeHost) InjectMessage(wf, from string, p nodestore.MessageInterface) (string, chan nodestore.MessageInterface, error) {
 	return "", nil, nil
@@ -46,8 +60,10 @@ func (h *fakeHost) DiscardPending(id string)                                    
 func (h *fakeHost) LookupNode(wf, nodeID string) (nodestore.NodeInterface, bool) {
 	return nil, false
 }
-func (h *fakeHost) RunningFlow(wf string) (nodestore.WorkflowInterface, bool) { return nil, false }
-func (h *fakeHost) RunContext(wf string) context.Context                      { return context.Background() }
+func (h *fakeHost) RunningFlow(wf string) (nodestore.WorkflowInterface, bool) {
+	return nodestore.NewWorkflow("wf"), true
+}
+func (h *fakeHost) RunContext(wf string) context.Context { return context.Background() }
 func (h *fakeHost) GetOrCreateNodeState(wf, nodeID string, f func() interface{}) interface{} {
 	key := wf + "/" + nodeID
 	if s, ok := h.states[key]; ok {
@@ -58,6 +74,9 @@ func (h *fakeHost) GetOrCreateNodeState(wf, nodeID string, f func() interface{})
 	return s
 }
 func (h *fakeHost) ExecuteDownstream(ctx context.Context, wf, from string, w nodestore.WorkflowInterface, p nodestore.MessageInterface, ports []string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.emitted = append(h.emitted, p)
 }
 func (h *fakeHost) NodeEnv(wf, nodeID, name string) (interface{}, bool) { return nil, false }
 func (h *fakeHost) ResolvedContextStore() nodebase.ContextStore         { return nil }
@@ -73,82 +92,115 @@ func newNode(cfg *BatchConfig) (*BatchNode, *fakeHost) {
 	return NewBatchNode(nodestore.NewNode("b1", "batch").SetWorkflowID("wf"), cfg, host), host
 }
 
+// payloads extracts the emitted payloads in order.
+func payloads(msgs []nodestore.MessageInterface) []interface{} {
+	out := make([]interface{}, 0, len(msgs))
+	for _, m := range msgs {
+		out = append(out, m.GetPayload())
+	}
+	return out
+}
+
 func TestBatchCount(t *testing.T) {
-	n, _ := newNode(&BatchConfig{Mode: "count", Count: 2})
+	n, host := newNode(&BatchConfig{Mode: "count", Count: 2})
 	ctx := context.Background()
 	out, err := n.Execute(ctx, nodestore.NewMessage().SetPayload("a"))
 	if err != nil || out != nil {
 		t.Fatal("first message should buffer")
 	}
 	out, err = n.Execute(ctx, nodestore.NewMessage().SetPayload("b"))
-	if err != nil || out == nil {
-		t.Fatal("batch should complete at count")
+	if err != nil || out != nil {
+		t.Fatal("completing message is also dropped — the batch emits as a sequence")
 	}
-	arr, ok := out.GetPayload().([]interface{})
-	if !ok || len(arr) != 2 || arr[0] != "a" || arr[1] != "b" {
-		t.Fatalf("batch payload wrong: %v", out.GetPayload())
+	emitted := host.waitFor(2, 2*time.Second)
+	if len(emitted) != 2 {
+		t.Fatalf("expected a 2-message sequence, got %d", len(emitted))
+	}
+	got := payloads(emitted)
+	if got[0] != "a" || got[1] != "b" {
+		t.Fatalf("sequence payloads wrong: %v", got)
+	}
+	// parts are renumbered on the shared sequence id
+	for i, m := range emitted {
+		parts := m.GetMetadata()["parts"].(map[string]interface{})
+		if parts["index"] != i || parts["count"] != 2 || parts["id"] == "" {
+			t.Fatalf("parts wrong at %d: %v", i, parts)
+		}
 	}
 }
 
 func TestBatchCountOverlap(t *testing.T) {
-	n, _ := newNode(&BatchConfig{Mode: "count", Count: 2, Overlap: 1})
+	n, host := newNode(&BatchConfig{Mode: "count", Count: 2, Overlap: 1})
 	ctx := context.Background()
 	n.Execute(ctx, nodestore.NewMessage().SetPayload("a"))
 	n.Execute(ctx, nodestore.NewMessage().SetPayload("b"))
 	// overlap keeps "b" → next batch needs only one more
-	out, _ := n.Execute(ctx, nodestore.NewMessage().SetPayload("c"))
-	arr := out.GetPayload().([]interface{})
-	if len(arr) != 2 || arr[0] != "b" || arr[1] != "c" {
-		t.Fatalf("overlap batch wrong: %v", arr)
+	n.Execute(ctx, nodestore.NewMessage().SetPayload("c"))
+	emitted := host.waitFor(4, 2*time.Second)
+	if len(emitted) != 4 {
+		t.Fatalf("expected two 2-message sequences, got %d", len(emitted))
+	}
+	got := payloads(emitted)
+	if got[0] != "a" || got[1] != "b" || got[2] != "b" || got[3] != "c" {
+		t.Fatalf("overlap sequences wrong: %v", got)
 	}
 }
 
 func TestBatchHonourParts(t *testing.T) {
-	n, _ := newNode(&BatchConfig{Mode: "count", Count: 1, HonourParts: true})
+	n, host := newNode(&BatchConfig{Mode: "count", Count: 3, HonourParts: true})
 	ctx := context.Background()
-	mk := func(id string, v interface{}) nodestore.MessageInterface {
+	mk := func(id string, i, count int, v interface{}) nodestore.MessageInterface {
 		m := nodestore.NewMessage().SetPayload(v)
 		m.SetMetadata(map[string]interface{}{
-			"parts": map[string]interface{}{"id": id, "index": 0, "count": 1},
+			"parts": map[string]interface{}{"id": id, "index": i, "count": count},
 		})
 		return m
 	}
-	out1, _ := n.Execute(ctx, mk("g1", "x"))
-	out2, _ := n.Execute(ctx, mk("g2", "y"))
-	// separate buffers per parts.id — each completes independently
-	if out1 == nil || out2 == nil {
-		t.Fatal("honourParts should batch each group separately")
+	// a completed incoming sequence flushes the batch early
+	n.Execute(ctx, mk("g1", 0, 2, "x"))
+	n.Execute(ctx, mk("g1", 1, 2, "y"))
+	emitted := host.waitFor(2, 2*time.Second)
+	if got := payloads(emitted); len(got) != 2 || got[0] != "x" || got[1] != "y" {
+		t.Fatalf("honourParts should flush on sequence end: %v", got)
 	}
 }
 
 func TestBatchConcat(t *testing.T) {
-	n, _ := newNode(&BatchConfig{Mode: "concat"})
+	n, host := newNode(&BatchConfig{Mode: "concat", Topics: []struct {
+		Topic string `json:"topic"`
+	}{{Topic: "t"}}})
 	ctx := context.Background()
 	mk := func(i int, v interface{}) nodestore.MessageInterface {
 		m := nodestore.NewMessage().SetPayload(v)
 		m.SetMetadata(map[string]interface{}{
+			"topic": "t",
 			"parts": map[string]interface{}{"id": "g", "index": i, "count": 3},
 		})
 		return m
 	}
-	if out, _ := n.Execute(ctx, mk(0, []interface{}{1.0, 2.0})); out != nil {
+	if out, _ := n.Execute(ctx, mk(0, 1.0)); out != nil {
 		t.Fatal("incomplete concat should buffer")
 	}
-	n.Execute(ctx, mk(1, []interface{}{3.0}))
-	out, _ := n.Execute(ctx, mk(2, "tail"))
-	arr := out.GetPayload().([]interface{})
-	// arrays flattened, scalar appended
-	if len(arr) != 4 || arr[0] != 1.0 || arr[3] != "tail" {
-		t.Fatalf("concat wrong: %v", arr)
+	n.Execute(ctx, mk(1, 2.0))
+	n.Execute(ctx, mk(2, "tail"))
+	emitted := host.waitFor(3, 2*time.Second)
+	got := payloads(emitted)
+	// the topic sequence is re-emitted as one renumbered sequence
+	if len(got) != 3 || got[0] != 1.0 || got[2] != "tail" {
+		t.Fatalf("concat wrong: %v", got)
 	}
 }
 
 func TestBatchConcatNoParts(t *testing.T) {
-	n, _ := newNode(&BatchConfig{Mode: "concat"})
+	n, _ := newNode(&BatchConfig{Mode: "concat", Topics: []struct {
+		Topic string `json:"topic"`
+	}{{Topic: "t"}}})
 	msg := nodestore.NewMessage().SetPayload("x")
+	msg.SetMetadata(map[string]interface{}{"topic": "t"})
 	out, err := n.Execute(context.Background(), msg)
-	if err != nil || out != msg {
-		t.Fatal("message without parts should pass through")
+	// Node-RED errors "no-parts" — the message is dropped
+	if err != nil || out != nil {
+		t.Fatal("message without parts should drop in concat mode")
 	}
 }
 
@@ -160,17 +212,10 @@ func TestBatchInterval(t *testing.T) {
 		t.Fatal("interval mode should buffer")
 	}
 	n.Execute(ctx, nodestore.NewMessage().SetPayload("b"))
-	deadline := time.Now().Add(2 * time.Second)
-	for len(host.emittedMsgs()) == 0 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	emitted := host.emittedMsgs()
-	if len(emitted) != 1 {
-		t.Fatal("window flush should emit one batch")
-	}
-	arr := emitted[0].GetPayload().([]interface{})
-	if len(arr) != 2 {
-		t.Fatalf("interval batch wrong: %v", arr)
+	emitted := host.waitFor(2, 2*time.Second)
+	got := payloads(emitted)
+	if len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Fatalf("interval sequence wrong: %v", got)
 	}
 }
 

@@ -177,6 +177,12 @@ func (n *SplitNode) Expand(output nodestore.MessageInterface) []nodestore.Messag
 				if end > rv.Len() {
 					end = rv.Len()
 				}
+				if size == 1 {
+					// Node-RED emits the element itself when the chunk
+					// length is 1, not a one-element array.
+					chunks = append(chunks, rv.Index(i).Interface())
+					continue
+				}
 				chunk := make([]interface{}, 0, end-i)
 				for j := i; j < end; j++ {
 					chunk = append(chunk, rv.Index(j).Interface())
@@ -215,6 +221,14 @@ func (n *SplitNode) Expand(output nodestore.MessageInterface) []nodestore.Messag
 			"index": i,
 			"count": count,
 		}
+		if partType == "array" {
+			// Node-RED records the configured chunk length so a
+			// downstream join can re-flatten multi-element chunks.
+			size := n.config.ArraySplt
+			if size > 0 {
+				parts["len"] = size
+			}
+		}
 		if delim != "" {
 			parts["ch"] = delim
 		}
@@ -222,7 +236,9 @@ func (n *SplitNode) Expand(output nodestore.MessageInterface) []nodestore.Messag
 			parts["key"] = keys[i]
 		}
 		if !onData {
-			parts["property"] = sourceProp
+			// Node-RED records the full message path (payload.*) so a
+			// downstream join can read and write back the same property.
+			parts["property"] = "payload." + sourceProp
 		}
 		if prev, ok := p.GetMetadata()["parts"]; ok {
 			parts["parts"] = prev // preserve outer split's parts

@@ -66,14 +66,15 @@ func TestFileInLines(t *testing.T) {
 		t.Fatalf("execute failed: %v", err)
 	}
 	parts := n.Expand(out)
-	if len(parts) != 3 {
-		t.Fatalf("expected 3 lines, got %d", len(parts))
+	// Node-RED emits the trailing empty line a final newline produces
+	if len(parts) != 4 {
+		t.Fatalf("expected 4 lines, got %d", len(parts))
 	}
-	if parts[0].GetPayload() != "a" || parts[1].GetPayload() != "b" || parts[2].GetPayload() != "c" {
+	if parts[0].GetPayload() != "a" || parts[1].GetPayload() != "b" || parts[2].GetPayload() != "c" || parts[3].GetPayload() != "" {
 		t.Fatalf("lines wrong: %v", parts[0].GetPayload())
 	}
 	pm := parts[0].GetMetadata()["parts"].(map[string]interface{})
-	if pm["type"] != "lines" || pm["count"] != 3 || pm["ch"] != "\n" {
+	if pm["type"] != "string" || pm["count"] != 4 || pm["ch"] != "\n" {
 		t.Fatalf("parts metadata wrong: %v", pm)
 	}
 }

@@ -85,9 +85,9 @@ func TestSplitArray(t *testing.T) {
 	if len(parts) != 3 {
 		t.Fatalf("expected 3 parts, got %d", len(parts))
 	}
-	chunk, ok := parts[0].GetPayload().([]interface{})
-	if !ok || len(chunk) != 1 {
-		t.Fatalf("array chunk wrong: %v", parts[0].GetPayload())
+	// chunk length 1 emits the element itself, not a 1-element array
+	if parts[0].GetPayload() != 1 {
+		t.Fatalf("array element wrong: %v", parts[0].GetPayload())
 	}
 	// chunked
 	n2 := newNode(&SplitConfig{ArraySplt: 2})
@@ -153,13 +153,12 @@ func TestSplitPropertyPath(t *testing.T) {
 		t.Fatalf("expected 2 parts, got %d", len(parts))
 	}
 	m := parts[0].GetPayload().(map[string]interface{})
-	chunk, ok := m["items"].([]interface{})
-	if !ok || len(chunk) != 1 || chunk[0] != "a" {
-		t.Fatalf("chunk should be written at the source path: %v", m)
+	if m["items"] != "a" {
+		t.Fatalf("element should be written at the source path: %v", m)
 	}
 	pm := parts[0].GetMetadata()["parts"].(map[string]interface{})
-	if pm["property"] != "items" {
-		t.Fatalf("parts should record property: %v", pm)
+	if pm["property"] != "payload.items" {
+		t.Fatalf("parts should record the full property path: %v", pm)
 	}
 }
 

@@ -109,8 +109,9 @@ func TestJoinAutoPassthrough(t *testing.T) {
 	n := newNode(&JoinConfig{}, host)
 	msg := nodestore.NewMessage().SetPayload("x") // no parts
 	out, err := n.Execute(context.Background(), msg)
-	if err != nil || out != msg {
-		t.Fatal("message without parts should pass through")
+	// Node-RED warns "Message missing msg.parts property" and drops it
+	if err != nil || out != nil {
+		t.Fatal("auto mode should drop messages without parts")
 	}
 }
 
@@ -132,24 +133,40 @@ func TestJoinBuilds(t *testing.T) {
 		}},
 		{"merged", func(t *testing.T, got interface{}) {
 			m, ok := got.(map[string]interface{})
-			if !ok || m["x"] != 1 {
+			if !ok || m["x"] != 1 || m["y"] != 2 {
 				t.Fatalf("merged join wrong: %v", got)
 			}
 		}},
 	}
 	for _, c := range cases {
 		host := newFakeHost()
-		n := newNode(&JoinConfig{Build: c.build, Joiner: "-"}, host)
+		n := newNode(&JoinConfig{}, host) // auto mode: parts.type drives the build
 		ctx := context.Background()
 		var p1, p2 interface{} = "a", "b"
 		if c.build == "merged" {
+			// merged counts distinct keys — two one-key maps complete at 2
 			p1 = map[string]interface{}{"x": 1}
-			p2 = map[string]interface{}{}
+			p2 = map[string]interface{}{"y": 2}
 		}
-		if _, err := n.Execute(ctx, partMsg("g", 0, 2, p1)); err != nil {
+		extra := map[string]interface{}{"type": c.build}
+		if c.build == "string" {
+			extra["ch"] = "-"
+		}
+		if c.build == "object" {
+			extra["key"] = "0"
+		}
+		mk := func(i int, v interface{}, ex map[string]interface{}) nodestore.MessageInterface {
+			m := partMsg("g", i, 2, v)
+			for k, ev := range ex {
+				m.GetMetadata()["parts"].(map[string]interface{})[k] = ev
+			}
+			return m
+		}
+		if _, err := n.Execute(ctx, mk(0, p1, extra)); err != nil {
 			t.Fatalf("execute failed: %v", err)
 		}
-		out, err := n.Execute(ctx, partMsg("g", 1, 2, p2))
+		extra["key"] = "1"
+		out, err := n.Execute(ctx, mk(1, p2, extra))
 		if err != nil || out == nil {
 			t.Fatalf("%s: expected joined message", c.build)
 		}
@@ -163,7 +180,7 @@ func TestJoinObjectUsesPartsKey(t *testing.T) {
 	mk := func(key string, v interface{}) nodestore.MessageInterface {
 		m := nodestore.NewMessage().SetPayload(v)
 		m.SetMetadata(map[string]interface{}{
-			"parts": map[string]interface{}{"id": "g", "index": 0, "count": 2, "key": key},
+			"parts": map[string]interface{}{"id": "g", "index": 0, "count": 2, "key": key, "type": "object"},
 		})
 		return m
 	}
@@ -182,17 +199,15 @@ func TestJoinCustom(t *testing.T) {
 	mk := func(topic string, v interface{}) nodestore.MessageInterface {
 		return nodestore.NewMessage().SetPayload(map[string]interface{}{"topic": topic, "v": v})
 	}
-	// group by topic: two "a" messages complete; "b" stays buffered
+	// Node-RED custom mode keeps a single group ("_"), not per-topic:
+	// the first two arrivals complete regardless of their topics.
 	out, _ := n.Execute(ctx, mk("b", "x"))
 	if out != nil {
-		t.Fatal("b group incomplete")
+		t.Fatal("first message should buffer")
 	}
-	if _, err := n.Execute(ctx, mk("a", 1)); err != nil {
-		t.Fatalf("execute failed: %v", err)
-	}
-	out, err := n.Execute(ctx, mk("a", 2))
+	out, err := n.Execute(ctx, mk("a", 1))
 	if err != nil || out == nil {
-		t.Fatal("a group should complete")
+		t.Fatal("second message should complete the group")
 	}
 	// property default "payload": joined value is array of whole payloads
 	arr := out.GetPayload().([]interface{})
@@ -204,8 +219,10 @@ func TestJoinCustom(t *testing.T) {
 func TestJoinCustomNoCount(t *testing.T) {
 	host := newFakeHost()
 	n := newNode(&JoinConfig{Mode: "custom"}, host)
-	if _, err := n.Execute(context.Background(), nodestore.NewMessage().SetPayload(map[string]interface{}{})); err == nil {
-		t.Fatal("custom mode without count should error")
+	// Node-RED buffers indefinitely with no count/timeout — no error
+	out, err := n.Execute(context.Background(), nodestore.NewMessage().SetPayload(map[string]interface{}{}))
+	if err != nil || out != nil {
+		t.Fatal("custom mode without count should buffer silently")
 	}
 }
 
@@ -246,12 +263,13 @@ func TestJoinValidate(t *testing.T) {
 
 func TestJoinPropertyPath(t *testing.T) {
 	host := newFakeHost()
-	n := newNode(&JoinConfig{Property: "items"}, host)
+	n := newNode(&JoinConfig{}, host)
 	ctx := context.Background()
+	// auto mode reads/writes the path in parts.property (Node-RED)
 	mk := func(i int, v interface{}) nodestore.MessageInterface {
 		m := nodestore.NewMessage().SetPayload(map[string]interface{}{"items": v})
 		m.SetMetadata(map[string]interface{}{
-			"parts": map[string]interface{}{"id": "g", "index": i, "count": 2},
+			"parts": map[string]interface{}{"id": "g", "index": i, "count": 2, "property": "payload.items"},
 		})
 		return m
 	}

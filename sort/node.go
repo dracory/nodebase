@@ -48,43 +48,65 @@ var schema = map[string]interface{}{
 		"order": map[string]interface{}{
 			"type":    "string",
 			"title":   "Order",
-			"enum":    []string{"asc", "desc"},
-			"default": "asc",
+			"enum":    []string{"ascending", "descending"},
+			"default": "ascending",
 		},
-		"asNum": map[string]interface{}{
+		"as_num": map[string]interface{}{
 			"type":        "boolean",
 			"title":       "Numeric Compare",
 			"description": "Coerce compared values to numbers first",
 			"default":     false,
 		},
-		"target": map[string]interface{}{
+		"targetType": map[string]interface{}{
 			"type":        "string",
 			"title":       "Target",
 			"enum":        []string{"msg", "seq"},
 			"default":     "msg",
-			"description": "msg: sort the payload array in place; seq: sort a message sequence by seqKey",
+			"description": "msg: sort the array at target in place; seq: sort a message sequence by seqKey",
+		},
+		"target": map[string]interface{}{
+			"type":        "string",
+			"title":       "Target Property",
+			"description": "msg target: message property holding the array to sort (default \"payload\")",
+		},
+		"msgKey": map[string]interface{}{
+			"type":        "string",
+			"title":       "Element Key",
+			"description": "msg target: per-element key — evaluated as a sequence expression when msgKeyType is \"jsonata\"",
 		},
 		"seqKey": map[string]interface{}{
 			"type":        "string",
 			"title":       "Sequence Key",
-			"description": "seq target: dotted path into each message's payload used as sort key (default \"payload\")",
+			"description": "seq target: message path or sequence expression used as sort key (default \"payload\")",
 		},
 	},
 }
 
 // SortConfig holds configuration for the sort node — the Node-RED
-// sort equivalent.
+// sort equivalent (order/as_num/targetType/msgKey/seqKey fields).
 type SortConfig struct {
-	// Order is "asc" (default) or "desc"
+	// Order is "ascending" (default) or "descending" — the "asc"/"desc"
+	// spellings from older serialization are also accepted
 	Order string `json:"order"`
-	// AsNum coerces compared values to numbers first
-	AsNum bool `json:"asNum"`
-	// Target is "msg" (sort the payload array in place, default) or
-	// "seq" (sort a whole message sequence by SeqKey)
+	// AsNum coerces compared values to numbers first (serialized "as_num")
+	AsNum bool `json:"as_num"`
+	// Target is the msg-target property path holding the array to
+	// sort (default "payload"); ignored for seq target
 	Target string `json:"target"`
-	// SeqKey is the dotted path into each message's Data used as the
-	// sequence sort key; "payload"/empty compares the Data itself
+	// TargetType selects the sort target: "msg" sorts the array at
+	// Target in place, "seq" sorts a parts sequence by SeqKey
+	TargetType string `json:"targetType"`
+	// MsgKey is the msg-target element key: msgKeyType "jsonata"
+	// evaluates it against each element, anything else compares the
+	// elements themselves
+	MsgKey string `json:"msgKey"`
+	// MsgKeyType is "elem" (compare elements) or "jsonata"
+	MsgKeyType string `json:"msgKeyType"`
+	// SeqKey is the seq-target sort key: seqKeyType "msg" reads a
+	// message property path, "jsonata" evaluates it against the message
 	SeqKey string `json:"seqKey"`
+	// SeqKeyType is "msg" or "jsonata"
+	SeqKeyType string `json:"seqKeyType"`
 }
 
 // sortState is the per-node buffered sequence groups stored on the
@@ -92,6 +114,9 @@ type SortConfig struct {
 type sortState struct {
 	mu     sync.Mutex
 	groups map[string][]nodestore.MessageInterface
+	// emission FIFO: sequences drain in order on one worker goroutine
+	queue   [][]nodestore.MessageInterface
+	emitRun bool
 }
 
 // SortNode sorts either a payload array in place ("msg" target) or a
@@ -136,13 +161,20 @@ func (n *SortNode) Execute(ctx context.Context, input nodestore.MessageInterface
 	return n.executeMsg(input)
 }
 
-// executeMsg sorts the payload's array in place and passes it through.
+// executeMsg sorts the array at the configured target property in
+// place and passes it through.
 func (n *SortNode) executeMsg(input nodestore.MessageInterface) (nodestore.MessageInterface, error) {
-	arr, ok := input.GetPayload().([]interface{})
+	target := n.config.Target
+	if target == "" {
+		target = "payload"
+	}
+	v, _ := nodebase.NodeProperty(input, target)
+	arr, ok := v.([]interface{})
 	if !ok {
 		return input, nil // not an array — pass through unchanged
 	}
 	n.sortValues(arr)
+	nodebase.NodeSetProperty(input, target, arr)
 	return input, nil
 }
 
@@ -202,13 +234,46 @@ func (n *SortNode) emitSequence(msgs []nodestore.MessageInterface) {
 			parts["count"] = len(msgs)
 		}
 	}
-	workflow, _ := n.host.RunningFlow(n.workflowID)
-	ctx := n.host.RunContext(n.workflowID)
-	if workflow == nil {
+	n.queueEmission(msgs)
+}
+
+// queueEmission serializes sequence emissions on the node's FIFO
+// worker — overlapping goroutines would interleave sequences at a
+// downstream join/batch.
+func (n *SortNode) queueEmission(msgs []nodestore.MessageInterface) {
+	state := n.state()
+	state.mu.Lock()
+	state.queue = append(state.queue, msgs)
+	if !state.emitRun {
+		state.emitRun = true
+		state.mu.Unlock()
+		go n.drainEmits()
 		return
 	}
-	for _, msg := range msgs {
-		n.host.ExecuteDownstream(ctx, n.workflowID, n.GetID(), workflow, msg, nil)
+	state.mu.Unlock()
+}
+
+// drainEmits walks the emission queue FIFO until empty.
+func (n *SortNode) drainEmits() {
+	workflow, _ := n.host.RunningFlow(n.workflowID)
+	ctx := n.host.RunContext(n.workflowID)
+	state := n.state()
+	for {
+		state.mu.Lock()
+		if len(state.queue) == 0 {
+			state.emitRun = false
+			state.mu.Unlock()
+			return
+		}
+		seq := state.queue[0]
+		state.queue = state.queue[1:]
+		state.mu.Unlock()
+		if workflow == nil {
+			continue
+		}
+		for _, msg := range seq {
+			n.host.ExecuteDownstream(ctx, n.workflowID, n.GetID(), workflow, msg, nil)
+		}
 	}
 }
 
@@ -230,17 +295,35 @@ func deepCopyMetadata(md map[string]interface{}) map[string]interface{} {
 	return out
 }
 
-// sortValues orders an array using JS-like compare semantics: numeric
-// when both sides coerce (or asNum forces coercion), otherwise lexical
-// on the string form.
+// sortValues orders an array using JavaScript compare semantics
+// (JSCompare); msgKeyType "jsonata" maps each element through the
+// msgKey expression before comparing.
 func (n *SortNode) sortValues(arr []interface{}) {
+	keyFn := n.msgElemKey()
 	sort.SliceStable(arr, func(i, j int) bool {
-		c := compareValues(arr[i], arr[j], n.config.AsNum)
+		c := compareValues(keyFn(arr[i]), keyFn(arr[j]), n.config.AsNum)
 		if n.desc() {
 			return c > 0
 		}
 		return c < 0
 	})
+}
+
+// msgElemKey returns the element key function for msg-target sorts:
+// the identity for msgKeyType "elem"/empty, or the msgKey expression
+// evaluated with the element as context.
+func (n *SortNode) msgElemKey() func(interface{}) interface{} {
+	if n.config.MsgKeyType != "jsonata" || n.config.MsgKey == "" {
+		return func(v interface{}) interface{} { return v }
+	}
+	expr := n.config.MsgKey
+	return func(v interface{}) interface{} {
+		out, err := nodebase.EvalSeqExpr(expr, v, nil)
+		if err != nil {
+			return v
+		}
+		return out
+	}
 }
 
 // sortMessages orders buffered sequence messages by the seqKey value.
@@ -254,19 +337,24 @@ func (n *SortNode) sortMessages(msgs []nodestore.MessageInterface) {
 	})
 }
 
-// seqValue extracts the sort key from a sequence message: the whole
-// Data for "payload"/empty, else the dotted path inside the data map.
+// seqValue extracts the sort key from a sequence message: seqKeyType
+// "jsonata" evaluates the seqKey expression against the whole message
+// (msg.payload.price style paths); "msg"/empty reads seqKey as a
+// message property path (default "payload").
 func (n *SortNode) seqValue(msg nodestore.MessageInterface) interface{} {
-	key := n.config.SeqKey
-	if key == "" || key == "payload" {
-		return msg.GetPayload()
-	}
-	if m, ok := msg.GetPayload().(map[string]interface{}); ok {
-		if v, found := nodebase.GetPath(m, key); found {
-			return v
+	if n.config.SeqKeyType == "jsonata" {
+		v, err := nodebase.EvalSeqExpr(n.config.SeqKey, nodebase.MessageMap(msg), nil)
+		if err != nil {
+			return nil
 		}
+		return v
 	}
-	return nil
+	key := n.config.SeqKey
+	if key == "" {
+		key = "payload"
+	}
+	v, _ := nodebase.NodeProperty(msg, key)
+	return v
 }
 
 // state returns (creating if needed) the per-node buffered groups.
@@ -278,7 +366,7 @@ func (n *SortNode) state() *sortState {
 
 // target returns the configured sort target (default "msg")
 func (n *SortNode) target() string {
-	if n.config.Target == "seq" {
+	if n.config.TargetType == "seq" || n.config.Target == "seq" {
 		return "seq"
 	}
 	return "msg"
@@ -289,36 +377,20 @@ func (n *SortNode) desc() bool {
 	return n.config.Order == "desc" || n.config.Order == "descending"
 }
 
-// compareValues orders two values with JS-like semantics: when asNum
-// is set both sides are coerced to numbers; otherwise numbers compare
-// numerically, strings lexically, and mixed types by string form.
-// Returns -1, 0 or 1.
+// compareValues orders two values with JavaScript semantics: as_num
+// coerces both sides through Number() first (NaN compares last);
+// otherwise JSCompare applies > between strings lexically and numbers
+// numerically. Returns -1, 0 or 1.
 func compareValues(a, b interface{}, asNum bool) int {
 	if asNum {
-		if fa, err1 := nodebase.ToFloat(a); err1 == nil {
-			if fb, err2 := nodebase.ToFloat(b); err2 == nil {
-				return compareFloats(fa, fb)
-			}
+		fa, okA := nodebase.JSNumber(a)
+		fb, okB := nodebase.JSNumber(b)
+		if !okA || !okB {
+			return -1 // NaN: "a > b" and "a === b" both false
 		}
+		return compareFloats(fa, fb)
 	}
-	_, aStr := a.(string)
-	_, bStr := b.(string)
-	if !aStr && !bStr {
-		if fa, err1 := nodebase.ToFloat(a); err1 == nil {
-			if fb, err2 := nodebase.ToFloat(b); err2 == nil {
-				return compareFloats(fa, fb)
-			}
-		}
-	}
-	sa := fmt.Sprintf("%v", a)
-	sb := fmt.Sprintf("%v", b)
-	switch {
-	case sa < sb:
-		return -1
-	case sa > sb:
-		return 1
-	}
-	return 0
+	return nodebase.JSCompare(a, b)
 }
 
 // compareFloats returns -1/0/1 ordering two floats

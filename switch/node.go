@@ -5,10 +5,13 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
+	"regexp"
+	"sort"
+	"strings"
+	"sync"
+
 	"github.com/dracory/nodebase"
 	nodestore "github.com/dracory/nodestore"
-	"regexp"
-	"strings"
 )
 
 //go:embed editor.html
@@ -211,6 +214,13 @@ type SwitchConfig struct {
 	// Otherwise adds a dedicated port after the last rule output; a
 	// message matching no rule is routed there (Node-RED "otherwise").
 	Otherwise bool `json:"otherwise"`
+	// CheckAll is Node-RED's serialized evaluate-all flag ("true"/
+	// "false") — used when Mode is unset
+	CheckAll string `json:"checkall"`
+	// Repair is Node-RED's sequence-repair flag: a parts sequence is
+	// buffered until complete, then each output's surviving subset is
+	// re-emitted with parts.index/count rewritten
+	Repair bool `json:"repair"`
 }
 
 // SwitchNode routes the message to one of several output ports based on
@@ -238,9 +248,113 @@ func NewSwitchNode(node nodestore.NodeInterface, config *SwitchConfig, host ...n
 }
 
 // Execute passes the input through unchanged — routing is done by the
-// host via SelectPorts
+// host via SelectPorts. With repair enabled and a parts sequence, the
+// message is buffered until the sequence completes, then each output's
+// subset is re-emitted with repaired parts and this message dropped.
 func (n *SwitchNode) Execute(ctx context.Context, input nodestore.MessageInterface) (nodestore.MessageInterface, error) {
-	return input, nil
+	if !n.config.Repair {
+		return input, nil
+	}
+	parts, ok := input.GetMetadata()["parts"].(map[string]interface{})
+	if !ok || parts["id"] == nil {
+		return input, nil // not a sequence — repair does nothing
+	}
+	id, _ := parts["id"].(string)
+	count := 0
+	if c, err := nodebase.ToFloat(parts["count"]); err == nil {
+		count = int(c)
+	}
+	if count <= 0 {
+		return input, nil
+	}
+
+	state := n.repairState()
+	state.mu.Lock()
+	group := append(state.groups[id], queuedMsg{msg: input, ports: n.matchPorts(input), index: partsIndex(parts)})
+	if len(group) < count {
+		state.groups[id] = group
+		state.mu.Unlock()
+		return nil, nil // keep buffering — drop this message
+	}
+	delete(state.groups, id)
+	state.mu.Unlock()
+
+	n.emitRepaired(group)
+	return nil, nil
+}
+
+// queuedMsg is one buffered sequence member plus its matched ports and
+// original parts.index.
+type queuedMsg struct {
+	msg   nodestore.MessageInterface
+	ports []string
+	index int
+}
+
+// repairGroups is the per-node buffered repair state.
+type repairGroups struct {
+	mu     sync.Mutex
+	groups map[string][]queuedMsg
+}
+
+// partsIndex reads parts.index from a parts map (0 if absent).
+func partsIndex(parts map[string]interface{}) int {
+	if f, err := nodebase.ToFloat(parts["index"]); err == nil {
+		return int(f)
+	}
+	return 0
+}
+
+// emitRepaired replays each output's surviving subsequence through the
+// matching port's edges in parts order, rewriting parts.index/count so
+// a downstream join sees a complete sequence (Node-RED repair).
+func (n *SwitchNode) emitRepaired(group []queuedMsg) {
+	sort.SliceStable(group, func(i, j int) bool { return group[i].index < group[j].index })
+	workflow, _ := n.host.RunningFlow(n.workflowID)
+	ctx := n.host.RunContext(n.workflowID)
+	if workflow == nil {
+		return
+	}
+	go func() {
+		portCount := len(n.config.Rules)
+		if n.config.Otherwise {
+			portCount++
+		}
+		for port := 1; port <= portCount; port++ {
+			key := fmt.Sprintf("output_%d", port)
+			var subset []nodestore.MessageInterface
+			for _, q := range group {
+				for _, p := range q.ports {
+					if p == key {
+						subset = append(subset, q.msg)
+						break
+					}
+				}
+			}
+			for i, msg := range subset {
+				em := nodebase.ClonePayload(msg)
+				if em.GetMetadata() == nil {
+					em.SetMetadata(map[string]interface{}{})
+				}
+				srcParts, _ := em.GetMetadata()["parts"].(map[string]interface{})
+				parts := make(map[string]interface{}, len(srcParts)+2)
+				for k, v := range srcParts {
+					parts[k] = v
+				}
+				em.GetMetadata()["parts"] = parts
+				parts["index"] = i
+				parts["count"] = len(subset)
+				n.host.ExecuteDownstream(ctx, n.workflowID, n.GetID(), workflow, em, []string{key})
+			}
+		}
+	}()
+}
+
+// repairState returns (creating if needed) the per-node repair buffer.
+func (n *SwitchNode) repairState() *repairGroups {
+	return n.host.GetOrCreateNodeState(n.workflowID, n.GetID(), func() interface{} {
+		return &repairGroups{groups: map[string][]queuedMsg{}}
+	}).(*repairGroups)
 }
 
 // switchOperators is the accepted op set (mirrors the schema enum).
@@ -279,6 +393,12 @@ func (n *SwitchNode) Validate() error {
 // at the first match; "all" returns every matching port. No match returns
 // an empty slice — the message dies at this node.
 func (n *SwitchNode) SelectPorts(input, output nodestore.MessageInterface) []string {
+	return n.matchPorts(input)
+}
+
+// matchPorts evaluates the configured rules in order against the input
+// payload and returns the matching output port keys.
+func (n *SwitchNode) matchPorts(input nodestore.MessageInterface) []string {
 	var ports []string
 	rc := &nodebase.RuleContext{Host: n.host, WorkflowID: n.workflowID, NodeID: n.ID()}
 	for i, rule := range n.config.Rules {
@@ -300,9 +420,14 @@ func (n *SwitchNode) SelectPorts(input, output nodestore.MessageInterface) []str
 	return ports
 }
 
-// mode returns the configured evaluation mode, defaulting to "first"
+// mode returns the configured evaluation mode, defaulting to "first".
+// Node-RED's serialized "checkall" maps here: "true" → all, "false" →
+// first (used when the native mode field is unset).
 func (n *SwitchNode) mode() string {
-	if n.config.Mode == "all" {
+	if n.config.Mode == "all" || n.config.Mode == "first" {
+		return n.config.Mode
+	}
+	if n.config.CheckAll == "true" {
 		return "all"
 	}
 	return "first"
