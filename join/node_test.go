@@ -330,3 +330,58 @@ func TestJoinPropertyPath(t *testing.T) {
 		t.Fatalf("joined at wrong path: %v", m)
 	}
 }
+
+func TestJoinReduceSequence(t *testing.T) {
+	host := newFakeHost()
+	n := newNode(&JoinConfig{
+		Mode:           "reduce",
+		ReduceExp:      "$A + payload",
+		ReduceInit:     "0",
+		ReduceInitType: "num",
+		ReduceFixup:    "$A / $N",
+	}, host)
+	ctx := context.Background()
+
+	// Arrival order is intentionally reversed: reduction must follow
+	// parts.index order. The fold is (0+2+3)/2.
+	out, err := n.Execute(ctx, partMsg("reduce-group", 1, 2, 3))
+	if err != nil || out != nil {
+		t.Fatalf("first reduce part should buffer: out=%v err=%v", out, err)
+	}
+	out, err = n.Execute(ctx, partMsg("reduce-group", 0, 2, 2))
+	if err != nil {
+		t.Fatalf("reduce execute failed: %v", err)
+	}
+	if out == nil {
+		t.Fatal("final reduce part should emit the reduced message")
+	}
+	if got := out.GetPayload(); got != 2.5 {
+		t.Fatalf("reduced payload = %#v, want 2.5", got)
+	}
+}
+
+func TestJoinReduceRight(t *testing.T) {
+	host := newFakeHost()
+	n := newNode(&JoinConfig{
+		Mode:           "reduce",
+		ReduceExp:      "$A & payload",
+		ReduceInit:     "",
+		ReduceInitType: "str",
+		ReduceRight:    true,
+	}, host)
+	ctx := context.Background()
+
+	if out, err := n.Execute(ctx, partMsg("right-group", 0, 2, "a")); err != nil || out != nil {
+		t.Fatalf("first reduce-right part should buffer: out=%v err=%v", out, err)
+	}
+	out, err := n.Execute(ctx, partMsg("right-group", 1, 2, "b"))
+	if err != nil {
+		t.Fatalf("reduce-right execute failed: %v", err)
+	}
+	if out == nil {
+		t.Fatal("final reduce-right part should emit the reduced message")
+	}
+	if out.GetPayload() != "ba" {
+		t.Fatalf("reduceRight should fold descending parts.index into ba, got %#v", out.GetPayload())
+	}
+}
