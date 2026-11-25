@@ -3,6 +3,7 @@ module github.com/dracory/nodebase
 go 1.27.0
 
 require (
+	github.com/cbroglie/mustache v1.4.1
 	github.com/coder/websocket v1.8.15
 	github.com/dop251/goja v0.0.0-20261124141918-d9d211bc2d23
 	github.com/dracory/neat v0.61.0

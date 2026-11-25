@@ -4,6 +4,8 @@ github.com/Masterminds/semver/v3 v3.5.0 h1:kQceYJfbupGfZOKZQg0kou0DgAKhzDg2NZPAw
 github.com/Masterminds/semver/v3 v3.5.0/go.mod h1:4V+yj/TJE1HU9XfppCwVMZq3I84lprf4nC11bSS5beM=
 github.com/antlr4-go/antlr/v4 v4.13.1 h1:SqQKkuVZ+zWkMMNkjy5FZe5mr5WURWnlpmOuzYWrPrQ=
 github.com/antlr4-go/antlr/v4 v4.13.1/go.mod h1:GKmUxMtwp6ZgGwZSva4eWPC5mS6vUAmOABFgjdkM7Nw=
+github.com/cbroglie/mustache v1.4.1 h1:n25LTo+hAYnUmFa2Quucou/JN/PJ+4hvI3aZHss/wLU=
+github.com/cbroglie/mustache v1.4.1/go.mod h1:Q5dS171cNzDjfoeB6S1/GBl8bUJgIa3t8i3eyL80vzc=
 github.com/coder/websocket v1.8.15 h1:6B2JPeOGlpff2Uz6vOEH1Vzpi0iUz20A+lPVhPHtNUA=
 github.com/coder/websocket v1.8.15/go.mod h1:NX3SzP+inril6yawo5CQXx8+fk145lPDC6pumgx0mVg=
 github.com/dlclark/regexp2/v2 v2.11.0 h1:z5uRPHav+eTVpoffDSuUP2KPS4f1ONZaPDK73S8HA0w=
