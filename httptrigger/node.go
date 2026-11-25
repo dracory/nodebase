@@ -10,8 +10,10 @@ import (
 	"github.com/dracory/nodebase"
 	nodestore "github.com/dracory/nodestore"
 	"io"
+	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -54,9 +56,10 @@ var schema = map[string]interface{}{
 	"type": "object",
 	"properties": map[string]interface{}{
 		"method": map[string]interface{}{
-			"type":    "string",
-			"enum":    []string{"GET", "POST", "PUT", "DELETE"},
-			"default": "GET",
+			"type":        "string",
+			"enum":        []string{"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"},
+			"default":     "GET",
+			"description": "HTTP method the route answers (case-insensitive — Node-RED stores lowercase)",
 		},
 		"listener": map[string]interface{}{
 			"type":    "string",
@@ -82,6 +85,17 @@ var schema = map[string]interface{}{
 			"description": "Seconds to wait for a downstream httpResponse before a 504 (0 = 15s default)",
 			"default":     0,
 		},
+		// swaggerDoc / cors exist on Node-RED exports; tolerated so
+		// imported flows deploy unchanged.
+		"swaggerDoc": map[string]interface{}{
+			"type":        "object",
+			"title":       "Swagger Doc",
+			"description": "Accepted for Node-RED compatibility; currently ignored at runtime",
+		},
+		"cors": map[string]interface{}{
+			"title":       "CORS",
+			"description": "Accepted for Node-RED compatibility; currently ignored at runtime",
+		},
 	},
 	"required": []string{"path"},
 }
@@ -101,6 +115,10 @@ type HTTPTriggerConfig struct {
 	// downstream httpResponse before a 504 is returned
 	// (0 = defaultResponseTimeout).
 	ResponseTimeout float64 `json:"responseTimeout"`
+	// SwaggerDoc and Cors appear on Node-RED exports; decoded and
+	// preserved for round-trip fidelity but ignored at runtime.
+	SwaggerDoc json.RawMessage `json:"swaggerDoc,omitempty"`
+	Cors       json.RawMessage `json:"cors,omitempty"`
 }
 
 // HTTPTrigger is a node that triggers a workflow via HTTP.
@@ -251,21 +269,13 @@ func (n *HTTPTrigger) handleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse request body if present — bounded so an unauthenticated
-	// client cannot exhaust memory with an unbounded upload.
-	var requestData map[string]interface{}
+	// client cannot exhaust memory with an unbounded upload. The
+	// decoded shape depends on Content-Type (see parseRequestBody).
+	var requestData interface{}
 	if r.Body != nil {
-		if r.ContentLength > maxTriggerBodyBytes {
-			http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
-			return
-		}
-		r.Body = http.MaxBytesReader(w, r.Body, maxTriggerBodyBytes)
-		if err := json.NewDecoder(r.Body).Decode(&requestData); err != nil && err != io.EOF {
-			var maxErr *http.MaxBytesError
-			if errors.As(err, &maxErr) || err.Error() == "http: request body too large" {
-				http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
-				return
-			}
-			http.Error(w, "Invalid request body", http.StatusBadRequest)
+		var ok bool
+		requestData, ok = n.parseRequestBody(w, r)
+		if !ok {
 			return
 		}
 	}
@@ -289,12 +299,22 @@ func (n *HTTPTrigger) handleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	payload := nodestore.NewMessage().SetPayload(data).SetMetadata(make(map[string]interface{})).SetTimestamp(time.Now())
 
-	// Add request metadata
+	// Add request metadata — the flat keys are kept for existing
+	// flows; "req" is the Node-RED msg.req equivalent (headers +
+	// cookies + request line fields in one object).
 	payload.GetMetadata()["method"] = r.Method
 	payload.GetMetadata()["path"] = r.URL.Path
 	payload.GetMetadata()["query"] = r.URL.Query()
 	payload.GetMetadata()["headers"] = r.Header
 	payload.GetMetadata()["remoteAddr"] = r.RemoteAddr
+	payload.GetMetadata()["req"] = map[string]interface{}{
+		"method":     r.Method,
+		"path":       r.URL.Path,
+		"query":      r.URL.Query(),
+		"headers":    r.Header,
+		"cookies":    requestCookies(r),
+		"remoteAddr": r.RemoteAddr,
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 
@@ -338,6 +358,80 @@ func (n *HTTPTrigger) handleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// parseRequestBody decodes the request body by Content-Type, Node-RED
+// http-in style:
+//   - application/json (or any */*+json) → decoded JSON value
+//   - application/x-www-form-urlencoded → map (repeated keys become slices)
+//   - text/plain → string
+//   - anything else or missing → raw bytes ([]byte)
+//
+// The body is capped at maxTriggerBodyBytes; on failure it writes the
+// HTTP error itself and returns ok=false so the caller just returns.
+func (n *HTTPTrigger) parseRequestBody(w http.ResponseWriter, r *http.Request) (data interface{}, ok bool) {
+	if r.ContentLength > maxTriggerBodyBytes {
+		http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+		return nil, false
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxTriggerBodyBytes)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) || strings.Contains(err.Error(), "request body too large") {
+			http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+		} else {
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+		}
+		return nil, false
+	}
+	if len(body) == 0 {
+		return nil, true
+	}
+
+	mediaType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	switch {
+	case mediaType == "application/json" || strings.HasSuffix(mediaType, "+json"):
+		var decoded interface{}
+		if err := json.Unmarshal(body, &decoded); err != nil {
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return nil, false
+		}
+		return decoded, true
+	case mediaType == "application/x-www-form-urlencoded":
+		values, err := url.ParseQuery(string(body))
+		if err != nil {
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return nil, false
+		}
+		form := make(map[string]interface{}, len(values))
+		for k, v := range values {
+			if len(v) == 1 {
+				form[k] = v[0]
+			} else {
+				form[k] = v
+			}
+		}
+		return form, true
+	case mediaType == "text/plain":
+		return string(body), true
+	default:
+		return body, true
+	}
+}
+
+// requestCookies flattens the request's Cookie header into a
+// name→value map (Node-RED msg.req.cookies equivalent).
+func requestCookies(r *http.Request) map[string]string {
+	cookies := r.Cookies()
+	if len(cookies) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(cookies))
+	for _, c := range cookies {
+		out[c.Name] = c.Value
+	}
+	return out
+}
+
 // responseTimeout returns the configured response wait (default 15s).
 func (n *HTTPTrigger) responseTimeout() time.Duration {
 	if n.config.ResponseTimeout > 0 {
@@ -358,6 +452,14 @@ func (n *HTTPTrigger) Validate() error {
 
 	if n.config.Method == "" {
 		n.config.Method = "GET" // Default to GET if not specified
+	}
+	// Node-RED stores the method lowercase ("get"); normalize so
+	// imported flows match the configured route.
+	n.config.Method = strings.ToUpper(n.config.Method)
+	switch n.config.Method {
+	case "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS":
+	default:
+		return fmt.Errorf("invalid method %q", n.config.Method)
 	}
 
 	switch n.config.Listener {

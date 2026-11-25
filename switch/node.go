@@ -32,12 +32,15 @@ func factory(n nodestore.NodeInterface, e nodebase.NodeHost) (nodebase.NodeExecu
 }
 
 // nrRuleOps maps Node-RED rule type codes onto native ops. Types with
-// no native equivalent (btwn, head, tail, index, hask, jsonata_exp,
-// true/false/null/nnull, nempty) are deliberately absent.
+// no native equivalent (jsonata_exp) are deliberately absent; "else"
+// and "true"/"false" get bespoke translation below.
 var nrRuleOps = map[string]string{
 	"eq": "eq", "neq": "neq", "lt": "lt", "lte": "lte",
 	"gt": "gt", "gte": "gte", "cont": "contains",
-	"regex": "regex", "empty": "empty", "istype": "istype",
+	"regex": "regex", "empty": "empty", "nempty": "nempty",
+	"istype": "istype", "null": "null", "nnull": "nnull",
+	"btwn": "btwn", "hask": "hask",
+	"head": "head", "tail": "tail", "index": "index",
 }
 
 // translateNRRules rewrites c.Rules in place when they arrived in the
@@ -80,9 +83,15 @@ func translateNRRules(n nodestore.NodeInterface, c *SwitchConfig) error {
 			if pt, _ := m["pt"].(string); pt != "" {
 				propType = pt
 			}
-			if propType == "flow" || propType == "global" {
+			switch {
+			case propType == "flow" || propType == "global":
 				translated = append(translated, nodebase.SwitchRule{Property: p, PropertyType: propType, Op: "eq", Value: t, ValueType: "bool"})
-			} else {
+			case propType == "jsonata":
+				if err := nodebase.CompileSeqExpr(p); err != nil {
+					return fmt.Errorf("switch: rule %d jsonata property %q does not compile: %w", i, p, err)
+				}
+				translated = append(translated, nodebase.SwitchRule{Property: p, PropertyType: "jsonata", Op: "eq", Value: t, ValueType: "bool"})
+			default:
 				translated = append(translated, nodebase.SwitchRule{Property: nrSwitchPath(p), Op: "eq", Value: t, ValueType: "bool"})
 			}
 			continue
@@ -107,6 +116,11 @@ func translateNRRules(n nodestore.NodeInterface, c *SwitchConfig) error {
 			p = nrSwitchPath(p)
 		case "flow", "global":
 			propType2 = pt // Property stays the raw context key
+		case "jsonata":
+			if err := nodebase.CompileSeqExpr(p); err != nil {
+				return fmt.Errorf("switch: rule %d jsonata property %q does not compile: %w", i, p, err)
+			}
+			propType2 = "jsonata" // Property stays the raw expression
 		default:
 			return fmt.Errorf("switch: rule %d reads %s context — not supported", i, pt)
 		}
@@ -124,8 +138,17 @@ func translateNRRules(n nodestore.NodeInterface, c *SwitchConfig) error {
 		default:
 			return fmt.Errorf("switch: rule %d uses Node-RED value type %q — not supported", i, vt)
 		}
+		// Range ops carry a second typed value (upstream v2/vt2).
+		v2, _ := m["v2"].(string)
+		vt2, _ := m["vt2"].(string)
+		switch vt2 {
+		case "", "str", "num", "bool", "json", "msg", "env", "flow", "global":
+		default:
+			return fmt.Errorf("switch: rule %d uses Node-RED value2 type %q — not supported", i, vt2)
+		}
 		translated = append(translated, nodebase.SwitchRule{
-			Property: p, PropertyType: propType2, Op: op, Value: v, ValueType: vt,
+			Property: p, PropertyType: propType2, Op: op,
+			Value: v, ValueType: vt, Value2: v2, Value2Type: vt2,
 		})
 	}
 	if len(translated) > 0 {
@@ -179,7 +202,12 @@ var schema = map[string]interface{}{
 					},
 					"op": map[string]interface{}{
 						"type": "string",
-						"enum": []string{"eq", "neq", "gt", "lt", "lte", "gte", "contains", "empty", "regex", "istype"},
+						"enum": []string{
+							"eq", "neq", "gt", "lt", "lte", "gte",
+							"contains", "empty", "nempty", "regex", "istype",
+							"true", "false", "null", "nnull", "else",
+							"btwn", "hask", "head", "tail", "index",
+						},
 					},
 					"value": map[string]interface{}{
 						"type":            "string",
@@ -187,6 +215,23 @@ var schema = map[string]interface{}{
 						"format":          "typedinput",
 						"typeField":       "valueType",
 						"typedInputTypes": []string{"str", "num", "bool", "json", "msg", "env", "flow", "global"},
+						// Value-less ops take no comparison value.
+						"hideWhen": map[string]interface{}{
+							"key": "op",
+							"in":  []string{"true", "false", "null", "nnull", "nempty", "else"},
+						},
+					},
+					"value2": map[string]interface{}{
+						"type":            "string",
+						"title":           "And",
+						"format":          "typedinput",
+						"typeField":       "value2Type",
+						"typedInputTypes": []string{"str", "num", "bool", "json", "msg", "env", "flow", "global"},
+						// Second range bound — only the range ops use it.
+						"showWhen": map[string]interface{}{
+							"key": "op",
+							"in":  []string{"btwn", "index"},
+						},
 					},
 				},
 			},
@@ -361,7 +406,10 @@ func (n *SwitchNode) repairState() *repairGroups {
 var switchOperators = map[string]bool{
 	"eq": true, "neq": true, "gt": true, "lt": true,
 	"lte": true, "gte": true, "contains": true, "empty": true,
-	"regex": true, "istype": true,
+	"nempty": true, "regex": true, "istype": true,
+	"true": true, "false": true, "null": true, "nnull": true,
+	"else": true, "btwn": true, "hask": true,
+	"head": true, "tail": true, "index": true,
 }
 
 // Validate rejects bad rule configuration at deploy time (project
@@ -377,6 +425,11 @@ func (n *SwitchNode) Validate() error {
 	for i, rule := range n.config.Rules {
 		if !switchOperators[rule.Op] {
 			return fmt.Errorf("switch: rule %d has unknown op %q", i, rule.Op)
+		}
+		if rule.PropertyType == "jsonata" {
+			if err := nodebase.CompileSeqExpr(rule.Property); err != nil {
+				return fmt.Errorf("switch: rule %d jsonata property %q does not compile: %w", i, rule.Property, err)
+			}
 		}
 		if rule.Op == "regex" {
 			p := strings.TrimPrefix(strings.TrimSuffix(rule.Value, "/"), "/")
@@ -400,14 +453,25 @@ func (n *SwitchNode) SelectPorts(input, output nodestore.MessageInterface) []str
 // payload and returns the matching output port keys.
 func (n *SwitchNode) matchPorts(input nodestore.MessageInterface) []string {
 	var ports []string
+	var elsePorts []string
 	rc := &nodebase.RuleContext{Host: n.host, WorkflowID: n.workflowID, NodeID: n.ID()}
 	for i, rule := range n.config.Rules {
+		// An "else" rule is a catch-all: it only claims the message
+		// when no ordinary rule matched, so it is set aside here and
+		// applied after the loop.
+		if rule.Op == "else" {
+			elsePorts = append(elsePorts, fmt.Sprintf("output_%d", i+1))
+			continue
+		}
 		if nodebase.EvalSwitchRuleCtx(rule, input, rc) {
 			ports = append(ports, fmt.Sprintf("output_%d", i+1))
 			if n.mode() == "first" {
 				break
 			}
 		}
+	}
+	if ports == nil && elsePorts != nil {
+		return elsePorts
 	}
 	if ports == nil {
 		// No rule matched: the optional "otherwise" port sits right

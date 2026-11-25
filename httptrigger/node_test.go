@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 
@@ -74,6 +75,7 @@ func TestTriggerRoundTrip(t *testing.T) {
 	host.responseCh <- resp
 
 	req := httptest.NewRequest(http.MethodPost, "/go/7?q=1", bytes.NewReader([]byte(`{"k":2}`)))
+	req.Header.Set("Content-Type", "application/json")
 	req.SetPathValue("id", "7")
 	rec := httptest.NewRecorder()
 	n.handleRequest(rec, req)
@@ -115,7 +117,9 @@ func TestTriggerBadBody(t *testing.T) {
 	host := &fakeHost{responseCh: make(chan nodestore.MessageInterface, 1)}
 	n := newNode(&HTTPTriggerConfig{Method: http.MethodPost, Path: "/x"}, host)
 	rec := httptest.NewRecorder()
-	n.handleRequest(rec, httptest.NewRequest(http.MethodPost, "/x", bytes.NewReader([]byte("{bad json"))))
+	badReq := httptest.NewRequest(http.MethodPost, "/x", bytes.NewReader([]byte("{bad json")))
+	badReq.Header.Set("Content-Type", "application/json")
+	n.handleRequest(rec, badReq)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("bad json should be 400: %d", rec.Code)
 	}
@@ -170,6 +174,111 @@ func TestTriggerStopIdempotent(t *testing.T) {
 	n := newNode(&HTTPTriggerConfig{}, &fakeHost{})
 	if err := n.Stop(); err != nil {
 		t.Fatalf("stop without server should be nil: %v", err)
+	}
+}
+
+func TestTriggerBodyParsing(t *testing.T) {
+	cases := []struct {
+		name        string
+		contentType string
+		body        string
+		want        interface{}
+	}{
+		{"json", "application/json", `{"k":2}`, map[string]interface{}{"k": float64(2)}},
+		{"json vendor suffix", "application/vnd.api+json", `[1,2]`, []interface{}{float64(1), float64(2)}},
+		{"form", "application/x-www-form-urlencoded", "a=1&b=x&b=y", map[string]interface{}{"a": "1", "b": []string{"x", "y"}}},
+		{"text", "text/plain; charset=utf-8", "hello", "hello"},
+		{"binary", "application/octet-stream", "\x01\x02", []byte{1, 2}},
+		{"no content type", "", "raw", []byte("raw")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			host := &fakeHost{responseCh: make(chan nodestore.MessageInterface, 1)}
+			n := newNode(&HTTPTriggerConfig{Method: http.MethodPost, Path: "/x"}, host)
+			host.responseCh <- nodestore.NewMessage().SetPayload("ok")
+
+			req := httptest.NewRequest(http.MethodPost, "/x", bytes.NewReader([]byte(tc.body)))
+			if tc.contentType != "" {
+				req.Header.Set("Content-Type", tc.contentType)
+			}
+			rec := httptest.NewRecorder()
+			n.handleRequest(rec, req)
+
+			if rec.Code != 200 {
+				t.Fatalf("status wrong: %d", rec.Code)
+			}
+			got := host.injected.GetPayload().(map[string]interface{})["body"]
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("body wrong: %#v want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestTriggerMethodsPutOptions(t *testing.T) {
+	for _, method := range []string{http.MethodPut, http.MethodOptions, http.MethodPatch, http.MethodHead, http.MethodDelete} {
+		host := &fakeHost{responseCh: make(chan nodestore.MessageInterface, 1)}
+		n := newNode(&HTTPTriggerConfig{Method: method, Path: "/x"}, host)
+		host.responseCh <- nodestore.NewMessage().SetPayload("ok")
+		rec := httptest.NewRecorder()
+		n.handleRequest(rec, httptest.NewRequest(method, "/x", nil))
+		if rec.Code != 200 {
+			t.Fatalf("%s rejected: %d", method, rec.Code)
+		}
+	}
+}
+
+func TestTriggerLowercaseMethod(t *testing.T) {
+	n := newNode(&HTTPTriggerConfig{Method: "post", Path: "/x"}, &fakeHost{})
+	if err := n.Validate(); err != nil {
+		t.Fatalf("lowercase method rejected: %v", err)
+	}
+	if n.config.Method != http.MethodPost {
+		t.Fatalf("method not normalized: %q", n.config.Method)
+	}
+}
+
+func TestTriggerInvalidMethod(t *testing.T) {
+	n := newNode(&HTTPTriggerConfig{Method: "FROBNICATE", Path: "/x"}, &fakeHost{})
+	if err := n.Validate(); err == nil {
+		t.Fatal("bogus method should fail validation")
+	}
+}
+
+func TestTriggerReqMetadata(t *testing.T) {
+	host := &fakeHost{responseCh: make(chan nodestore.MessageInterface, 1)}
+	n := newNode(&HTTPTriggerConfig{Method: http.MethodGet, Path: "/x"}, host)
+	host.responseCh <- nodestore.NewMessage().SetPayload("ok")
+
+	req := httptest.NewRequest(http.MethodGet, "/x?a=1", nil)
+	req.Header.Set("X-Trace", "abc")
+	req.AddCookie(&http.Cookie{Name: "sid", Value: "s3cret"})
+	rec := httptest.NewRecorder()
+	n.handleRequest(rec, req)
+
+	reqMeta, ok := host.injected.GetMetadata()["req"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("req metadata missing: %v", host.injected.GetMetadata())
+	}
+	if reqMeta["headers"].(http.Header).Get("X-Trace") != "abc" {
+		t.Fatalf("headers not surfaced: %v", reqMeta["headers"])
+	}
+	if reqMeta["cookies"].(map[string]string)["sid"] != "s3cret" {
+		t.Fatalf("cookies not surfaced: %v", reqMeta["cookies"])
+	}
+	if reqMeta["method"] != http.MethodGet || reqMeta["path"] != "/x" {
+		t.Fatalf("req fields wrong: %v", reqMeta)
+	}
+}
+
+func TestTriggerSwaggerCorsTolerated(t *testing.T) {
+	node := nodestore.NewNode("h1", "httpTrigger").SetWorkflowID("wf")
+	node.GetData()["method"] = "put"
+	node.GetData()["path"] = "/x"
+	node.GetData()["swaggerDoc"] = map[string]interface{}{"openapi": "3.0.0"}
+	node.GetData()["cors"] = true
+	if _, err := factory(node, &fakeHost{}); err != nil {
+		t.Fatalf("Node-RED export fields rejected: %v", err)
 	}
 }
 

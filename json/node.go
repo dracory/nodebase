@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/dracory/nodebase"
 	nodestore "github.com/dracory/nodestore"
+	"sort"
 )
 
 //go:embed editor.html
@@ -128,6 +129,13 @@ func (n *JSONNode) Execute(ctx context.Context, input nodestore.MessageInterface
 		return nil, err
 	}
 
+	// When the message carries a schema (msg.schema), the converted
+	// value is validated against it; a failure is a node error and the
+	// message does not continue downstream.
+	if err := n.validateSchema(input, result); err != nil {
+		return nil, err
+	}
+
 	if onData {
 		input.SetPayload(result)
 	} else {
@@ -196,4 +204,142 @@ func (n *JSONNode) convert(value interface{}) (interface{}, error) {
 	default:
 		return nil, fmt.Errorf("invalid json action %q (use \"\", str or obj)", n.config.Action)
 	}
+}
+
+// validateSchema checks the converted value against msg.schema when
+// present. The schema may arrive as a decoded object or a JSON string.
+// Only a practical subset is enforced: "type", "properties",
+// "required" and "items". Errors use the ajv-style message
+// "data/<path> must be <type>" that Node-RED surfaces.
+func (n *JSONNode) validateSchema(input nodestore.MessageInterface, value interface{}) error {
+	md := input.GetMetadata()
+	if md == nil {
+		return nil
+	}
+	raw, ok := md["schema"]
+	if !ok || raw == nil {
+		return nil
+	}
+	var schema map[string]interface{}
+	switch s := raw.(type) {
+	case map[string]interface{}:
+		schema = s
+	case string:
+		if err := json.Unmarshal([]byte(s), &schema); err != nil {
+			return fmt.Errorf("JSON Schema error: invalid schema: %v", err)
+		}
+	default:
+		return nil
+	}
+	if len(schema) == 0 {
+		return nil
+	}
+	if msg := validateValue(value, schema, "data"); msg != "" {
+		return fmt.Errorf("JSON Schema error: %s", msg)
+	}
+	return nil
+}
+
+// validateValue returns the first validation failure message, or "".
+// path is the ajv-style instance path ("data", "data/price", …).
+func validateValue(value interface{}, schema map[string]interface{}, path string) string {
+	if typ, ok := schema["type"].(string); ok && typ != "" {
+		if !jsonTypeMatches(value, typ) {
+			return fmt.Sprintf("%s must be %s", path, typ)
+		}
+	}
+	if req, ok := schema["required"].([]interface{}); ok {
+		obj, _ := value.(map[string]interface{})
+		for _, r := range req {
+			key, _ := r.(string)
+			if key == "" {
+				continue
+			}
+			if _, exists := obj[key]; !exists {
+				return fmt.Sprintf("%s must have required property '%s'", path, key)
+			}
+		}
+	}
+	if props, ok := schema["properties"].(map[string]interface{}); ok {
+		obj, isObj := value.(map[string]interface{})
+		if isObj {
+			for _, k := range sortedKeys(props) {
+				sub, _ := props[k].(map[string]interface{})
+				if sub == nil {
+					continue
+				}
+				if v, exists := obj[k]; exists {
+					if msg := validateValue(v, sub, path+"/"+k); msg != "" {
+						return msg
+					}
+				}
+			}
+		}
+	}
+	if items, ok := schema["items"].(map[string]interface{}); ok {
+		if arr, isArr := value.([]interface{}); isArr {
+			for i, v := range arr {
+				if msg := validateValue(v, items, fmt.Sprintf("%s/%d", path, i)); msg != "" {
+					return msg
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// jsonTypeMatches reports whether a decoded JSON value satisfies a
+// JSON Schema "type" keyword.
+func jsonTypeMatches(value interface{}, typ string) bool {
+	switch typ {
+	case "object":
+		_, ok := value.(map[string]interface{})
+		return ok
+	case "array":
+		_, ok := value.([]interface{})
+		return ok
+	case "string":
+		_, ok := value.(string)
+		return ok
+	case "number":
+		return isJSONNumber(value)
+	case "integer":
+		f, ok := value.(float64)
+		if ok {
+			return f == float64(int64(f))
+		}
+		return isJSONInt(value)
+	case "boolean":
+		_, ok := value.(bool)
+		return ok
+	case "null":
+		return value == nil
+	default:
+		return true // unknown types are not enforced
+	}
+}
+
+func isJSONNumber(v interface{}) bool {
+	switch v.(type) {
+	case float64, float32, int, int64, int32:
+		return true
+	}
+	return false
+}
+
+func isJSONInt(v interface{}) bool {
+	switch v.(type) {
+	case int, int64, int32:
+		return true
+	}
+	return false
+}
+
+func sortedKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }

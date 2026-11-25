@@ -372,7 +372,9 @@ func (n *ChangeNode) applySet(input nodestore.MessageInterface, rule ChangeRule)
 		} else if src == "payload" {
 			value = input.GetPayload()
 		} else if m, ok := input.GetPayload().(map[string]interface{}); ok {
-			value, _ = nodebase.GetPath(m, src)
+			// A "payload.x" source is a path inside the payload itself —
+			// strip the leading "payload." before walking the map.
+			value, _ = nodebase.GetPath(m, strings.TrimPrefix(src, "payload."))
 		}
 	} else {
 		rc := n.ruleContext()

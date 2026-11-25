@@ -5,7 +5,6 @@ package html
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	nodestore "github.com/dracory/nodestore"
@@ -61,8 +60,8 @@ func TestHTMLRetModes(t *testing.T) {
 		t.Fatalf("text mode: got %v", node.matches[0])
 	}
 	node, _ = htmlNode(t, &HTMLConfig{Tag: "#a", As: "single", Ret: "html"}, testHTMLDoc)
-	if s, _ := node.matches[0].(string); !strings.Contains(s, `data-k="1"`) {
-		t.Fatalf("html mode: got %v", node.matches[0])
+	if s, _ := node.matches[0].(string); s != "one" {
+		t.Fatalf("html mode should return inner HTML, got %v", node.matches[0])
 	}
 	node, _ = htmlNode(t, &HTMLConfig{Tag: "a", As: "single", Ret: "href"}, testHTMLDoc)
 	if node.matches[0] != "/x" {
@@ -70,10 +69,10 @@ func TestHTMLRetModes(t *testing.T) {
 	}
 }
 
-// TestHTMLSingleExpand verifies single mode emits one parts-tagged
+// TestHTMLMultiExpand verifies multi mode emits one parts-tagged
 // message per match and no matches emit nothing.
-func TestHTMLSingleExpand(t *testing.T) {
-	node, out := htmlNode(t, &HTMLConfig{Tag: "li", As: "single", Ret: "text"}, testHTMLDoc)
+func TestHTMLMultiExpand(t *testing.T) {
+	node, out := htmlNode(t, &HTMLConfig{Tag: "li", As: "multi", Ret: "text"}, testHTMLDoc)
 	outs := node.Expand(out)
 	if len(outs) != 2 {
 		t.Fatalf("expected 2 expanded messages, got %d", len(outs))
@@ -91,20 +90,51 @@ func TestHTMLSingleExpand(t *testing.T) {
 		t.Fatalf("unexpected payloads %v %v", outs[0].GetPayload(), outs[1].GetPayload())
 	}
 
-	node, out = htmlNode(t, &HTMLConfig{Tag: "h1", As: "single"}, testHTMLDoc)
+	node, out = htmlNode(t, &HTMLConfig{Tag: "h1", As: "multi"}, testHTMLDoc)
 	if got := node.Expand(out); got != nil {
 		t.Fatalf("no-match selector must emit nothing, got %v", got)
 	}
 }
 
-// TestHTMLMultiArray verifies multi mode returns one array payload.
-func TestHTMLMultiArray(t *testing.T) {
-	_, out := htmlNode(t, &HTMLConfig{Tag: "li", As: "multi", Ret: "text"}, testHTMLDoc)
+// TestHTMLSingleArray verifies single mode (the Node-RED default)
+// returns one message whose payload is an array of matches.
+func TestHTMLSingleArray(t *testing.T) {
+	_, out := htmlNode(t, &HTMLConfig{Tag: "li", As: "single", Ret: "text"}, testHTMLDoc)
 	arr, ok := out.GetPayload().([]interface{})
 	if !ok || len(arr) != 2 {
 		t.Fatalf("expected array of 2, got %v", out.GetPayload())
 	}
 	if arr[0] != "one" || arr[1] != "two" {
 		t.Fatalf("unexpected array %v", arr)
+	}
+}
+
+// TestHTMLSelectorFromMessage verifies an empty configured tag falls
+// back to msg.select.
+func TestHTMLSelectorFromMessage(t *testing.T) {
+	node := NewHTMLNode(nodestore.NewNode("h", "html"), &HTMLConfig{As: "single", Ret: "text"})
+	msg := nodestore.NewMessage().SetPayload(testHTMLDoc)
+	msg.SetMetadata(map[string]interface{}{"select": ".hot"})
+	out, err := node.Execute(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("html Execute failed: %v", err)
+	}
+	arr, ok := out.GetPayload().([]interface{})
+	if !ok || len(arr) != 1 || arr[0] != "two" {
+		t.Fatalf("msg.select extraction failed, got %v", out.GetPayload())
+	}
+}
+
+// TestHTMLOutProperty verifies extraction lands on outproperty.
+func TestHTMLOutProperty(t *testing.T) {
+	node := NewHTMLNode(nodestore.NewNode("h", "html"),
+		&HTMLConfig{Tag: "li", As: "single", Ret: "text", OutProperty: "items"})
+	out, err := node.Execute(context.Background(), nodestore.NewMessage().SetPayload(testHTMLDoc))
+	if err != nil {
+		t.Fatalf("html Execute failed: %v", err)
+	}
+	arr, ok := out.GetMetadata()["items"].([]interface{})
+	if !ok || len(arr) != 2 {
+		t.Fatalf("expected items metadata array of 2, got %v", out.GetMetadata())
 	}
 }

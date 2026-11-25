@@ -66,6 +66,60 @@ func TestSwitchOtherwise(t *testing.T) {
 	}
 }
 
+// TestSwitchElse covers the rule-level "else" catch-all: the else
+// port claims the message only when no ordinary rule matched.
+func TestSwitchElse(t *testing.T) {
+	n := newNode(&SwitchConfig{Rules: []nodebase.SwitchRule{
+		{Property: "v", Op: "eq", Value: "1"},
+		{Op: "else"},
+	}})
+	if ports := n.SelectPorts(msg(map[string]interface{}{"v": 1.0}), nil); len(ports) != 1 || ports[0] != "output_1" {
+		t.Fatalf("matching rule should win over else: %v", ports)
+	}
+	if ports := n.SelectPorts(msg(map[string]interface{}{"v": 9.0}), nil); len(ports) != 1 || ports[0] != "output_2" {
+		t.Fatalf("else should catch unmatched messages: %v", ports)
+	}
+	// "all" mode: else still yields only when nothing else matched.
+	all := newNode(&SwitchConfig{Mode: "all", Rules: []nodebase.SwitchRule{
+		{Op: "else"},
+		{Property: "v", Op: "gt", Value: "5"},
+	}})
+	if ports := all.SelectPorts(msg(map[string]interface{}{"v": 9.0}), nil); len(ports) != 1 || ports[0] != "output_2" {
+		t.Fatalf("all mode: else must not shadow a match: %v", ports)
+	}
+	if ports := all.SelectPorts(msg(map[string]interface{}{"v": 1.0}), nil); len(ports) != 1 || ports[0] != "output_1" {
+		t.Fatalf("all mode: else should catch unmatched: %v", ports)
+	}
+}
+
+// TestTranslateNRRulesBtwn checks a Node-RED "btwn" rule maps v2/vt2
+// onto the native Value2/Value2Type pair.
+func TestTranslateNRRulesBtwn(t *testing.T) {
+	n := nodestore.NewNode("n1", "switch")
+	n.SetData(map[string]interface{}{
+		"property":     "payload",
+		"propertyType": "msg",
+		"rules": []interface{}{
+			map[string]interface{}{"t": "btwn", "v": "1", "vt": "num", "v2": "9", "vt2": "num"},
+			map[string]interface{}{"t": "else"},
+		},
+	})
+	c := &SwitchConfig{}
+	if err := translateNRRules(n, c); err != nil {
+		t.Fatalf("translate failed: %v", err)
+	}
+	if !c.Otherwise {
+		t.Fatal("else rule should set the otherwise port")
+	}
+	if len(c.Rules) != 1 {
+		t.Fatalf("expected 1 translated rule, got %d", len(c.Rules))
+	}
+	r := c.Rules[0]
+	if r.Op != "btwn" || r.Value != "1" || r.ValueType != "num" || r.Value2 != "9" || r.Value2Type != "num" {
+		t.Fatalf("translated btwn rule wrong: %+v", r)
+	}
+}
+
 func TestSwitchValidate(t *testing.T) {
 	good := newNode(&SwitchConfig{Mode: "all", Rules: []nodebase.SwitchRule{
 		{Property: "v", Op: "regex", Value: "^a+$"},

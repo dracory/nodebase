@@ -4,7 +4,6 @@ package delay
 import (
 	"context"
 	_ "embed"
-	"fmt"
 	"math/rand"
 	"strings"
 	"sync"
@@ -205,17 +204,30 @@ type rateBucket struct {
 	interval time.Duration // 0 = use configured interval
 }
 
+// heldMsg is one message parked on a release timer — the fixed,
+// variable and random delay modes each keep an independent timer per
+// message (Node-RED's idList), so a held message can be released early
+// by msg.flush or dropped by msg.reset.
+type heldMsg struct {
+	msg   nodestore.MessageInterface
+	timer *time.Timer
+	fired bool
+}
+
 // delayState lives in the host's per-run state slot — executors are
-// rebuilt per message, so the limiter must not live on the node.
+// rebuilt per message, so the limiter and the held list must not live
+// on the node.
 type delayState struct {
 	mu      sync.Mutex
 	buckets map[string]*rateBucket
+	held    []*heldMsg // fixed/variable/random messages awaiting release
 }
 
 // DelayNode delays or rate-limits messages. Fixed/variable/random
-// modes sleep inside Execute; rate mode returns the message when the
-// window is free and otherwise queues it for a timed host.Emit —
-// honouring context cancellation so a stopped workflow exits promptly.
+// modes park the message on a timer and return immediately (Node-RED
+// parity — sibling wires are not stalled while a message is held);
+// rate mode returns the message when the window is free and otherwise
+// queues it for a timed host.Emit.
 type DelayNode struct {
 	*nodebase.BaseNode
 	config     *DelayConfig
@@ -237,37 +249,161 @@ func NewDelayNode(node nodestore.NodeInterface, config *DelayConfig, host nodeba
 // clears all held messages without sending them; a "flush" property
 // releases held messages immediately (all, or that many when numeric).
 func (n *DelayNode) Execute(ctx context.Context, input nodestore.MessageInterface) (nodestore.MessageInterface, error) {
-	if input != nil {
-		meta := input.GetMetadata()
-		if _, ok := meta["reset"]; ok {
+	if input == nil {
+		return nil, nil
+	}
+	meta := input.GetMetadata()
+	_, hasReset := meta["reset"]
+	flushVal, hasFlush := meta["flush"]
+
+	if n.mode() == "rate" {
+		if hasReset {
 			n.resetBuckets()
 			return nil, nil
 		}
-		if v, ok := meta["flush"]; ok {
-			n.flushBuckets(v)
+		if hasFlush {
+			n.flushBuckets(flushVal)
 			return nil, nil
 		}
+		return n.limit(ctx, input), nil
 	}
 
+	// Fixed/variable/random hold modes: the release timer is armed and
+	// the message parked first — then a reset clears the whole held
+	// list (including this message's own timer) and a flush releases
+	// the first held messages immediately. A bare flush control
+	// message is not itself parked (Node-RED: a msg whose only
+	// properties besides the id are "flush" never enters the list).
+	n.hold(input, n.holdDuration(input))
+	if hasReset {
+		n.clearHeld()
+		return nil, nil
+	}
+	if hasFlush {
+		n.flushHeld(flushVal)
+	}
+	return nil, nil
+}
+
+// holdDuration resolves how long the message is held for the active
+// hold mode (fixed, variable or random).
+func (n *DelayNode) holdDuration(input nodestore.MessageInterface) time.Duration {
 	switch n.mode() {
 	case "delayv":
-		if err := sleep(ctx, n.variableDelay(input)); err != nil {
-			return nil, err
-		}
-		return input, nil
+		return n.variableDelay(input)
 	case "random":
-		if err := sleep(ctx, n.randomDelay()); err != nil {
-			return nil, err
-		}
-		return input, nil
-	case "rate":
-		return n.limit(ctx, input), nil
-	default: // "delay" (and legacy "timed")
-		if err := sleep(ctx, n.fixedDelay()); err != nil {
-			return nil, err
-		}
-		return input, nil
+		return n.randomDelay()
+	default:
+		return n.fixedDelay()
 	}
+}
+
+// hold parks the message on a release timer and registers it in the
+// held list — unless it already fired (a zero delay) or it is a bare
+// flush control message.
+func (n *DelayNode) hold(input nodestore.MessageInterface, d time.Duration) {
+	state := n.state()
+	entry := &heldMsg{msg: input}
+	entry.timer = time.AfterFunc(d, func() { n.releaseHeld(entry) })
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if entry.fired {
+		return // released before registration could happen
+	}
+	if pureFlushControl(input) {
+		entry.timer.Stop()
+		return
+	}
+	state.held = append(state.held, entry)
+}
+
+// releaseHeld fires one parked message when its timer expires.
+func (n *DelayNode) releaseHeld(entry *heldMsg) {
+	state := n.state()
+	state.mu.Lock()
+	if entry.fired {
+		state.mu.Unlock()
+		return
+	}
+	entry.fired = true
+	for i, e := range state.held {
+		if e == entry {
+			state.held = append(state.held[:i], state.held[i+1:]...)
+			break
+		}
+	}
+	state.mu.Unlock()
+	_ = n.host.Emit(n.workflowID, n.GetID(), entry.msg, nil)
+}
+
+// clearHeld drops every parked message without sending it — the
+// msg.reset contract for the hold modes.
+func (n *DelayNode) clearHeld() {
+	state := n.state()
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	for _, e := range state.held {
+		e.timer.Stop()
+		e.fired = true
+	}
+	state.held = nil
+}
+
+// flushHeld releases parked messages immediately — the first n when
+// the flush property is numeric, otherwise all of them.
+func (n *DelayNode) flushHeld(v interface{}) {
+	state := n.state()
+	limit := -1
+	if f, ok := nodebase.ParseNumeric(v); ok {
+		limit = int(f)
+	}
+	state.mu.Lock()
+	var out []nodestore.MessageInterface
+	for len(state.held) > 0 && (limit < 0 || len(out) < limit) {
+		e := state.held[0]
+		state.held = state.held[1:]
+		e.timer.Stop()
+		e.fired = true
+		out = append(out, e.msg)
+	}
+	state.mu.Unlock()
+	for _, msg := range out {
+		_ = n.host.Emit(n.workflowID, n.GetID(), msg, nil)
+	}
+}
+
+// engineMetaKeys are metadata stamped by the runner itself (message
+// id, lineage, step counter) — they do not count as message properties
+// when deciding whether a flush-carrying message is a bare control
+// message.
+var engineMetaKeys = map[string]bool{
+	"msgId":         true,
+	"parentMsgId":   true,
+	"stepCount":     true,
+	"preserveMsgId": true,
+}
+
+// pureFlushControl reports whether the message is a bare flush control
+// message — Node-RED's `Object.keys(msg).length === 2 && "flush" in
+// msg` rule: no payload and no message properties besides "flush".
+// Such a message flushes the held list without entering it; a message
+// that also carries a payload or other properties is parked first and
+// may be released by its own flush.
+func pureFlushControl(msg nodestore.MessageInterface) bool {
+	if msg.GetPayload() != nil {
+		return false
+	}
+	meta := msg.GetMetadata()
+	if _, ok := meta["flush"]; !ok {
+		return false
+	}
+	for k := range meta {
+		if k == "flush" || engineMetaKeys[k] {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // mode normalizes pauseType, mapping Node-RED's legacy spellings
@@ -296,22 +432,31 @@ func (n *DelayNode) fixedDelay() time.Duration {
 }
 
 // variableDelay resolves the per-message delay (ms) from the property
-// named by delayPath — metadata first, then the payload map.
+// named by delayPath — metadata first, then the payload map. A
+// numeric value is used verbatim (negative clamps to zero, Node-RED
+// parity); absent or unparseable values fall back to the configured
+// fixed delay.
 func (n *DelayNode) variableDelay(input nodestore.MessageInterface) time.Duration {
 	path := n.config.DelayPath
 	if path == "" {
 		path = "delay"
 	}
+	clamp := func(f float64) time.Duration {
+		if f < 0 {
+			f = 0
+		}
+		return time.Duration(f * float64(time.Millisecond))
+	}
 	if input != nil {
 		if v, ok := nodebase.GetPath(input.GetMetadata(), path); ok {
-			if f, ok := nodebase.ParseNumeric(v); ok && f > 0 {
-				return time.Duration(f * float64(time.Millisecond))
+			if f, ok := nodebase.ParseNumeric(v); ok {
+				return clamp(f)
 			}
 		}
 		if m, ok := input.GetPayload().(map[string]interface{}); ok {
 			if v, ok := nodebase.GetPath(m, path); ok {
-				if f, ok := nodebase.ParseNumeric(v); ok && f > 0 {
-					return time.Duration(f * float64(time.Millisecond))
+				if f, ok := nodebase.ParseNumeric(v); ok {
+					return clamp(f)
 				}
 			}
 		}
@@ -551,15 +696,3 @@ func delayUnit(units string) time.Duration {
 	}
 }
 
-// sleep waits d, returning early when ctx is cancelled.
-func sleep(ctx context.Context, d time.Duration) error {
-	if d <= 0 {
-		return nil
-	}
-	select {
-	case <-ctx.Done():
-		return fmt.Errorf("delay interrupted: %w", ctx.Err())
-	case <-time.After(d):
-		return nil
-	}
-}

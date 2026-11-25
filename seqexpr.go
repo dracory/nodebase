@@ -1,7 +1,9 @@
 package nodebase
 
 import (
+	"encoding/json"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 )
@@ -12,8 +14,10 @@ import (
 // literals, dotted paths resolved against a context object, the
 // sequence variables ($A, $I, $N — bound by the caller via vars), the
 // functions $string, $substring and $append, the "&" concatenation
-// operator, the arithmetic operators + - * / %, unary minus,
-// parentheses, and array/object literals. Anything else fails at
+// operator, the arithmetic operators + - * / %, the comparison
+// operators = != < <= > >= (strict — no string↔number coercion),
+// unary minus, parentheses, and array/object literals.
+// Anything else fails at
 // compile time so deployment errors loudly rather than diverging
 // silently.
 
@@ -44,7 +48,7 @@ type seqExprFunc func(ctx interface{}, vars map[string]interface{}) (interface{}
 
 func compileSeqExpr(src string) (seqExprFunc, error) {
 	p := &seqExprParser{src: strings.TrimSpace(src)}
-	fn, err := p.parseConcat()
+	fn, err := p.parseCompare()
 	if err != nil {
 		return nil, err
 	}
@@ -66,6 +70,159 @@ func (p *seqExprParser) skipSpace() {
 	for p.pos < len(p.src) && (p.src[p.pos] == ' ' || p.src[p.pos] == '\t' || p.src[p.pos] == '\n' || p.src[p.pos] == '\r') {
 		p.pos++
 	}
+}
+
+// parseCompare parses a comparison: <concat> (=|!=|<|<=|>|>=) <concat>.
+// Comparisons are non-associative; an undefined operand makes the
+// whole comparison undefined.
+func (p *seqExprParser) parseCompare() (seqExprFunc, error) {
+	left, err := p.parseConcat()
+	if err != nil {
+		return nil, err
+	}
+	p.skipSpace()
+	op := ""
+	if p.pos < len(p.src) {
+		switch p.src[p.pos] {
+		case '=':
+			op = "="
+			p.pos++
+		case '!':
+			if p.pos+1 < len(p.src) && p.src[p.pos+1] == '=' {
+				op = "!="
+				p.pos += 2
+			}
+		case '<':
+			if p.pos+1 < len(p.src) && p.src[p.pos+1] == '=' {
+				op = "<="
+				p.pos += 2
+			} else {
+				op = "<"
+				p.pos++
+			}
+		case '>':
+			if p.pos+1 < len(p.src) && p.src[p.pos+1] == '=' {
+				op = ">="
+				p.pos += 2
+			} else {
+				op = ">"
+				p.pos++
+			}
+		}
+	}
+	if op == "" {
+		return left, nil
+	}
+	right, err := p.parseConcat()
+	if err != nil {
+		return nil, err
+	}
+	l, r := left, right
+	return func(ctx interface{}, vars map[string]interface{}) (interface{}, bool) {
+		av, ok := l(ctx, vars)
+		if !ok {
+			return nil, false
+		}
+		bv, ok := r(ctx, vars)
+		if !ok {
+			return nil, false
+		}
+		switch op {
+		case "=", "!=":
+			eq := seqExprEqual(av, bv)
+			if op == "!=" {
+				eq = !eq
+			}
+			return eq, true
+		}
+		cmp, ok := seqExprOrder(av, bv)
+		if !ok {
+			return nil, false
+		}
+		switch op {
+		case "<":
+			return cmp < 0, true
+		case "<=":
+			return cmp <= 0, true
+		case ">":
+			return cmp > 0, true
+		case ">=":
+			return cmp >= 0, true
+		}
+		return nil, false
+	}, nil
+}
+
+// seqExprEqual is the strict equality the sequence-expression subset
+// uses for "=" — no string↔number coercion: booleans compare to
+// booleans, strings to strings, numerics numerically, composites
+// structurally.
+func seqExprEqual(a, b interface{}) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	if ab, ok := a.(bool); ok {
+		bb, ok2 := b.(bool)
+		return ok2 && ab == bb
+	}
+	if _, ok := b.(bool); ok {
+		return false
+	}
+	if as, ok := a.(string); ok {
+		bs, ok2 := b.(string)
+		return ok2 && as == bs
+	}
+	if _, ok := b.(string); ok {
+		return false
+	}
+	if af, err := ToFloat(a); err == nil {
+		if bf, err2 := ToFloat(b); err2 == nil {
+			return af == bf
+		}
+		return false
+	}
+	return reflect.DeepEqual(a, b)
+}
+
+// seqExprOrder compares two values for the ordering operators:
+// strings lexically, numerics numerically; any other pairing is not
+// comparable (ok is false — the comparison evaluates undefined).
+func seqExprOrder(a, b interface{}) (int, bool) {
+	if as, ok := a.(string); ok {
+		bs, ok2 := b.(string)
+		if !ok2 {
+			return 0, false
+		}
+		switch {
+		case as < bs:
+			return -1, true
+		case as > bs:
+			return 1, true
+		}
+		return 0, true
+	}
+	if !seqExprIsNumber(a) || !seqExprIsNumber(b) {
+		return 0, false
+	}
+	af, _ := ToFloat(a)
+	bf, _ := ToFloat(b)
+	switch {
+	case af < bf:
+		return -1, true
+	case af > bf:
+		return 1, true
+	}
+	return 0, true
+}
+
+// seqExprIsNumber reports whether v is a genuine JSON numeric type —
+// strings and booleans never count for ordering.
+func seqExprIsNumber(v interface{}) bool {
+	switch v.(type) {
+	case float64, float32, int, int64, int32, json.Number:
+		return true
+	}
+	return false
 }
 
 // parseConcat parses "&"-joined additions (lowest precedence).
@@ -210,7 +367,7 @@ func (p *seqExprParser) parsePrimary() (seqExprFunc, error) {
 	switch {
 	case c == '(':
 		p.pos++
-		fn, err := p.parseConcat()
+		fn, err := p.parseCompare()
 		if err != nil {
 			return nil, err
 		}

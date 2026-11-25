@@ -106,6 +106,9 @@ type functionState struct {
 	mu     sync.Mutex
 	prog   *goja.Program
 	progOk bool
+	// sendQ lives inside the state: the host state slot is keyed by
+	// workflow+node id so only ONE state object may exist per node.
+	sendQ functionSendQueue
 }
 
 // FunctionNode executes arbitrary JavaScript over the message — the
@@ -335,11 +338,10 @@ func (q *functionSendQueue) drain(n *FunctionNode, workflow nodestore.WorkflowIn
 	}
 }
 
-// sendQueue returns (creating if needed) the node's shared send queue.
+// sendQueue returns the node's shared send queue — it lives inside the
+// single per-node state object (the host state slot holds one value).
 func (n *FunctionNode) sendQueue() *functionSendQueue {
-	return n.host.GetOrCreateNodeState(n.workflowID, n.GetID(), func() interface{} {
-		return &functionSendQueue{}
-	}).(*functionSendQueue)
+	return &n.state().sendQ
 }
 
 // handleSend interprets a send argument (node.send call arg or the

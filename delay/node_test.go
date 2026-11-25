@@ -89,67 +89,115 @@ func waitFor(t *testing.T, cond func() bool, what string) {
 }
 
 func TestDelayPasses(t *testing.T) {
-	n, _ := newNode(&DelayConfig{Duration: 1})
+	n, host := newNode(&DelayConfig{Duration: 1})
 	in := nodestore.NewMessage().SetPayload("x")
 	out, err := n.Execute(context.Background(), in)
-	if err != nil || out != in {
-		t.Fatalf("delay should pass the input through: %v", err)
+	if err != nil || out != nil {
+		t.Fatalf("delay holds the message asynchronously — out=%v err=%v", out, err)
+	}
+	waitFor(t, func() bool { return len(host.emittedMsgs()) == 1 }, "held release")
+	if got := host.emittedMsgs()[0]; got.GetPayload() != "x" {
+		t.Fatalf("released message lost its payload: %v", got.GetPayload())
 	}
 }
 
 func TestDelayTimeoutUnits(t *testing.T) {
-	n, _ := newNode(&DelayConfig{PauseType: "delay", Timeout: "30", TimeoutUnits: "milliseconds"})
+	n, host := newNode(&DelayConfig{PauseType: "delay", Timeout: "30", TimeoutUnits: "milliseconds"})
 	start := time.Now()
 	out, err := n.Execute(context.Background(), nodestore.NewMessage())
-	if err != nil || out == nil {
-		t.Fatalf("delay failed: %v", err)
+	if err != nil || out != nil {
+		t.Fatalf("delay should not block or error: out=%v err=%v", out, err)
 	}
-	if d := time.Since(start); d < 25*time.Millisecond {
-		t.Fatalf("returned too early: %v", d)
+	if d := time.Since(start); d > 20*time.Millisecond {
+		t.Fatalf("execute should return immediately, took %v", d)
 	}
+	waitFor(t, func() bool { return len(host.emittedMsgs()) == 1 }, "held release")
 }
 
-func TestDelayCancelled(t *testing.T) {
-	n, _ := newNode(&DelayConfig{PauseType: "delay", Timeout: 60, TimeoutUnits: "seconds"})
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		time.Sleep(20 * time.Millisecond)
-		cancel()
-	}()
-	start := time.Now()
-	if _, err := n.Execute(ctx, nodestore.NewMessage()); err == nil {
-		t.Fatal("cancelled delay should error")
+func TestDelayReleasedOnTimer(t *testing.T) {
+	// A held message is parked until its timer fires — sibling work is
+	// not stalled while it waits (Node-RED semantics).
+	n, host := newNode(&DelayConfig{PauseType: "delay", Timeout: 80, TimeoutUnits: "milliseconds"})
+	out, err := n.Execute(context.Background(), nodestore.NewMessage())
+	if err != nil || out != nil {
+		t.Fatalf("delay should return nil immediately: out=%v err=%v", out, err)
 	}
-	if time.Since(start) > 5*time.Second {
-		t.Fatal("cancelled delay should return promptly")
+	time.Sleep(20 * time.Millisecond)
+	if len(host.emittedMsgs()) != 0 {
+		t.Fatal("held message released before its timer")
 	}
+	waitFor(t, func() bool { return len(host.emittedMsgs()) == 1 }, "held release")
 }
 
 func TestDelayVariable(t *testing.T) {
-	n, _ := newNode(&DelayConfig{PauseType: "delayv", DelayPath: "delay"})
+	n, host := newNode(&DelayConfig{PauseType: "delayv", DelayPath: "delay", Timeout: 60, TimeoutUnits: "seconds"})
 	in := nodestore.NewMessage().SetMetadata(map[string]interface{}{"delay": "30"})
-	start := time.Now()
 	out, err := n.Execute(context.Background(), in)
-	if err != nil || out == nil {
-		t.Fatalf("delayv failed: %v", err)
+	if err != nil || out != nil {
+		t.Fatalf("delayv should not block or error: out=%v err=%v", out, err)
 	}
-	if d := time.Since(start); d < 25*time.Millisecond {
-		t.Fatalf("delayv returned too early: %v", d)
-	}
+	waitFor(t, func() bool { return len(host.emittedMsgs()) == 1 }, "msg.delay release")
 }
 
 func TestDelayRandom(t *testing.T) {
-	n, _ := newNode(&DelayConfig{
+	n, host := newNode(&DelayConfig{
 		PauseType: "random", RandomFirst: 10, RandomLast: 30, RandomUnits: "milliseconds",
 	})
 	for i := 0; i < 5; i++ {
-		start := time.Now()
-		if _, err := n.Execute(context.Background(), nodestore.NewMessage()); err != nil {
-			t.Fatal(err)
+		out, err := n.Execute(context.Background(), nodestore.NewMessage())
+		if err != nil || out != nil {
+			t.Fatalf("random delay should not block or error: out=%v err=%v", out, err)
 		}
-		if d := time.Since(start); d < 8*time.Millisecond || d > 500*time.Millisecond {
-			t.Fatalf("random delay out of range: %v", d)
-		}
+	}
+	waitFor(t, func() bool { return len(host.emittedMsgs()) == 5 }, "random releases")
+}
+
+func TestDelayResetClearsHeld(t *testing.T) {
+	// msg.reset drops every parked message — including the reset
+	// message's own pending release — without sending anything.
+	n, host := newNode(&DelayConfig{PauseType: "delay", Timeout: 60, TimeoutUnits: "seconds"})
+	ctx := context.Background()
+	n.Execute(ctx, nodestore.NewMessage().SetPayload("held"))
+	out, _ := n.Execute(ctx, nodestore.NewMessage().SetMetadata(map[string]interface{}{"reset": true}))
+	if out != nil {
+		t.Fatal("reset message should be consumed")
+	}
+	time.Sleep(100 * time.Millisecond)
+	if len(host.emittedMsgs()) != 0 {
+		t.Fatal("reset should clear held messages without sending them")
+	}
+}
+
+func TestDelayFlushReleasesHeld(t *testing.T) {
+	// A payload-carrying flush message is parked first, then flushes
+	// the whole held list — including itself (Node-RED semantics).
+	n, host := newNode(&DelayConfig{PauseType: "delay", Timeout: 60, TimeoutUnits: "seconds"})
+	ctx := context.Background()
+	n.Execute(ctx, nodestore.NewMessage().SetPayload("held"))
+	out, _ := n.Execute(ctx, nodestore.NewMessage().SetPayload("f").
+		SetMetadata(map[string]interface{}{"flush": true}))
+	if out != nil {
+		t.Fatal("flush message should be consumed")
+	}
+	em := host.emittedMsgs()
+	if len(em) != 2 || em[0].GetPayload() != "held" || em[1].GetPayload() != "f" {
+		t.Fatalf("flush should release held messages FIFO, got %v", em)
+	}
+}
+
+func TestDelayPureFlushNotHeld(t *testing.T) {
+	// A bare flush control message (no payload, no other properties)
+	// releases the held list without entering it.
+	n, host := newNode(&DelayConfig{PauseType: "delay", Timeout: 60, TimeoutUnits: "seconds"})
+	ctx := context.Background()
+	n.Execute(ctx, nodestore.NewMessage().SetPayload("held"))
+	out, _ := n.Execute(ctx, nodestore.NewMessage().SetMetadata(map[string]interface{}{"flush": true}))
+	if out != nil {
+		t.Fatal("flush control should be consumed")
+	}
+	em := host.emittedMsgs()
+	if len(em) != 1 || em[0].GetPayload() != "held" {
+		t.Fatalf("pure flush should release only the held message, got %v", em)
 	}
 }
 

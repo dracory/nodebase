@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/dracory/nodebase"
 	nodestore "github.com/dracory/nodestore"
@@ -23,7 +24,7 @@ func factory(n nodestore.NodeInterface, e nodebase.NodeHost) (nodebase.NodeExecu
 	if err := nodebase.DecodeConfig(n, c); err != nil {
 		return nil, err
 	}
-	return NewCSVNode(n, c), nil
+	return NewCSVNode(n, c, e), nil
 }
 
 // init registers the csv node with the core set.
@@ -75,6 +76,15 @@ type CSVConfig struct {
 	// HdrIn is Node-RED's header flag (serialized "hdrin"); same effect
 	// as Headers
 	HdrIn bool `json:"hdrin"`
+	// HdrOut controls header emission when serializing (serialized
+	// "hdrout"): "none" (default) never emits a header row, "all" emits
+	// one on every output, "once" emits one until a message carrying a
+	// reset property arrives
+	HdrOut string `json:"hdrout"`
+	// Temp is the column-name template (serialized "temp"): a
+	// separator-delimited list of column names used to key parsed rows
+	// and to select/order columns when serializing objects
+	Temp string `json:"temp"`
 	// Multi is Node-RED's output mode (serialized "multi"): "one"
 	// emits one message per row as a parts sequence; "mult" produces a
 	// single message whose payload is the whole parsed table. Unset
@@ -103,14 +113,47 @@ type CSVNode struct {
 	rows [][]string
 	// header holds the first row when Headers is set
 	header []string
+	// msgCols holds column names supplied by the triggering message
+	// (msg.columns) — used when no template is configured
+	msgCols []string
+	// host and workflowID locate the per-run state slot — executors
+	// are rebuilt per message, so hdrout "once" state lives there
+	host       nodebase.NodeHost
+	workflowID string
+	// local is the fallback state for host-less constructions (tests)
+	local *csvState
+}
+
+// csvState is the per-run mutable state for the csv node.
+type csvState struct {
+	mu sync.Mutex
+	// hdrSent records that a "once" header row was already written;
+	// a message carrying a reset property clears it
+	hdrSent bool
 }
 
 // NewCSVNode creates a new csv node
-func NewCSVNode(node nodestore.NodeInterface, config *CSVConfig) *CSVNode {
+func NewCSVNode(node nodestore.NodeInterface, config *CSVConfig, host nodebase.NodeHost) *CSVNode {
 	return &CSVNode{
-		BaseNode: nodebase.NewBaseNode(node),
-		config:   config,
+		BaseNode:   nodebase.NewBaseNode(node),
+		config:     config,
+		host:       host,
+		workflowID: node.GetWorkflowID(),
 	}
+}
+
+// state returns (creating if needed) the per-run csv state — host-backed
+// when a host is wired, local otherwise.
+func (n *CSVNode) state() *csvState {
+	if n.host != nil {
+		return n.host.GetOrCreateNodeState(n.workflowID, n.GetID(), func() interface{} {
+			return &csvState{}
+		}).(*csvState)
+	}
+	if n.local == nil {
+		n.local = &csvState{}
+	}
+	return n.local
 }
 
 // Execute converts the configured property. Strings are parsed and the
@@ -119,6 +162,16 @@ func NewCSVNode(node nodestore.NodeInterface, config *CSVConfig) *CSVNode {
 func (n *CSVNode) Execute(ctx context.Context, input nodestore.MessageInterface) (nodestore.MessageInterface, error) {
 	n.rows = nil
 	n.header = nil
+	n.msgCols = messageColumns(input, n.sep())
+
+	// A reset property re-arms the "once" header row (and would drop
+	// any learned column state — header rows are re-read per input).
+	if _, ok := input.GetMetadata()["reset"]; ok {
+		st := n.state()
+		st.mu.Lock()
+		st.hdrSent = false
+		st.mu.Unlock()
+	}
 
 	prop := n.property()
 	value, onData := nodebase.JSONSource(input, prop)
@@ -145,8 +198,8 @@ func (n *CSVNode) Execute(ctx context.Context, input nodestore.MessageInterface)
 		}
 		if n.config.Multi == "mult" {
 			// Single-message mode: the whole table as an array
-			// payload, objects keyed by the header row when set,
-			// plus a "columns" metadata list like Node-RED.
+			// of row objects, plus a "columns" metadata list
+			// like Node-RED.
 			n.writeValue(input, prop, onData, n.tableValue(rows))
 			if cols := n.columns(); cols != "" {
 				if input.GetMetadata() == nil {
@@ -159,7 +212,16 @@ func (n *CSVNode) Execute(ctx context.Context, input nodestore.MessageInterface)
 		n.rows = rows
 		return input, nil // Expand emits one message per row
 	case []interface{}:
-		s, err := serializeCSV(v, n.headers())
+		s, err := n.serializeRows(v)
+		if err != nil {
+			return nil, fmt.Errorf("csv serialize failed: %w", err)
+		}
+		n.writeValue(input, prop, onData, s)
+		return input, nil
+	case map[string]interface{}:
+		// A single object serializes as one row (column selection
+		// and header rules same as an array of objects).
+		s, err := n.serializeRows([]interface{}{v})
 		if err != nil {
 			return nil, fmt.Errorf("csv serialize failed: %w", err)
 		}
@@ -170,10 +232,11 @@ func (n *CSVNode) Execute(ctx context.Context, input nodestore.MessageInterface)
 	}
 }
 
-// Expand emits one message per parsed row. With headers each row is a
-// map keyed by the header line; otherwise a []string. Every message
-// carries parts metadata (id, type "csv", index, count) so a downstream
-// join node can reassemble the table.
+// Expand emits one message per parsed row. Each row is an object keyed
+// by the resolved column names — the header row, the configured
+// template, message-provided columns, or generated col1..colN. Every
+// message carries parts metadata (id, type "csv", index, count) so a
+// downstream join node can reassemble the table.
 func (n *CSVNode) Expand(output nodestore.MessageInterface) []nodestore.MessageInterface {
 	if n.rows == nil {
 		return []nodestore.MessageInterface{output} // serialize mode: single output
@@ -198,10 +261,7 @@ func (n *CSVNode) Expand(output nodestore.MessageInterface) []nodestore.MessageI
 			p.SetMetadata(map[string]interface{}{})
 		}
 
-		var rowData interface{} = rowSlice(row, n.parseStrings())
-		if n.header != nil {
-			rowData = rowObject(n.header, row, n.parseStrings())
-		}
+		rowData := rowObject(n.rowColumns(len(row)), row, n.parseStrings())
 
 		if prop == "payload" {
 			p.SetPayload(rowData)
@@ -245,25 +305,99 @@ func (n *CSVNode) parseStrings() bool {
 	return n.config.Strings == nil || *n.config.Strings
 }
 
-// columns returns the "columns" metadata Node-RED attaches: the header
-// row names joined by commas (empty when there is no header).
+// sep returns the configured column separator (default ",")
+func (n *CSVNode) sep() string {
+	if n.config.Sep == "" {
+		return ","
+	}
+	return n.config.Sep
+}
+
+// rowColumns resolves the column names for a parsed row: the header
+// row when set, else message-provided columns or the configured
+// template, else generated col1..colN names covering the row.
+func (n *CSVNode) rowColumns(rowLen int) []string {
+	if n.header != nil {
+		return n.header
+	}
+	if c := n.namedColumns(); c != nil {
+		return c
+	}
+	cols := make([]string, rowLen)
+	for i := range cols {
+		cols[i] = fmt.Sprintf("col%d", i+1)
+	}
+	return cols
+}
+
+// namedColumns returns the configured column template, or the column
+// names supplied by the triggering message (msg.columns) when no
+// template is configured; nil when neither is set.
+func (n *CSVNode) namedColumns() []string {
+	if n.config.Temp != "" {
+		return splitColumns(n.config.Temp, n.sep())
+	}
+	if n.msgCols != nil {
+		return n.msgCols
+	}
+	return nil
+}
+
+// columns returns the "columns" metadata Node-RED attaches: the
+// resolved column names joined by commas (empty when columns are
+// auto-generated).
 func (n *CSVNode) columns() string {
-	if n.header == nil {
+	cols := n.header
+	if cols == nil {
+		cols = n.namedColumns()
+	}
+	if cols == nil {
 		return ""
 	}
-	return strings.Join(n.header, ",")
+	return strings.Join(cols, ",")
+}
+
+// splitColumns splits a column-name list on the separator, trimming
+// whitespace around each name.
+func splitColumns(s, sep string) []string {
+	parts := strings.Split(s, sep)
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// messageColumns reads msg.columns (a separator-delimited string or an
+// array of strings) off the message metadata; nil when absent.
+func messageColumns(input nodestore.MessageInterface, sep string) []string {
+	if input == nil || input.GetMetadata() == nil {
+		return nil
+	}
+	switch c := input.GetMetadata()["columns"].(type) {
+	case string:
+		return splitColumns(c, sep)
+	case []interface{}:
+		out := make([]string, 0, len(c))
+		for _, v := range c {
+			out = append(out, fmt.Sprintf("%v", v))
+		}
+		return out
+	case []string:
+		return c
+	}
+	return nil
 }
 
 // tableValue renders parsed rows as the single-message payload: an
-// array of objects keyed by the header row, or an array of row arrays.
+// array of row objects keyed by the resolved column names.
 func (n *CSVNode) tableValue(rows [][]string) []interface{} {
 	out := make([]interface{}, 0, len(rows))
 	for _, row := range rows {
-		if n.header != nil {
-			out = append(out, rowObject(n.header, row, n.parseStrings()))
-		} else {
-			out = append(out, rowSlice(row, n.parseStrings()))
-		}
+		out = append(out, rowObject(n.rowColumns(len(row)), row, n.parseStrings()))
 	}
 	return out
 }
@@ -277,15 +411,6 @@ func rowObject(header, row []string, coerce bool) map[string]interface{} {
 		}
 	}
 	return m
-}
-
-// rowSlice renders a CSV row as a value slice
-func rowSlice(row []string, coerce bool) []interface{} {
-	cells := make([]interface{}, len(row))
-	for i, c := range row {
-		cells[i] = cellValue(c, coerce)
-	}
-	return cells
 }
 
 // numericCell mirrors Node-RED's coercion regex: numbers parse, but a
@@ -340,33 +465,56 @@ func skipLines(s string, n int) string {
 	return s
 }
 
-// serializeCSV writes rows to a CSV string. Rows may be slices of
-// scalars or maps; with headers=true a header row derived from the
-// first map's sorted keys is emitted first.
-func serializeCSV(rows []interface{}, headers bool) (string, error) {
+// serializeRows writes rows to a CSV string. Rows may be maps or
+// slices; column names come from msg.columns or the configured
+// template (selecting and ordering object keys), else from each map's
+// sorted keys. hdrout "all" prefixes every output with the column
+// list, "once" only until a message carrying reset arrives.
+func (n *CSVNode) serializeRows(rows []interface{}) (string, error) {
+	st := n.state()
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
 	var buf bytes.Buffer
 	w := csv.NewWriter(&buf)
+	if n.config.Sep != "" {
+		if rr := []rune(n.config.Sep); len(rr) > 0 {
+			w.Comma = rr[0]
+		}
+	}
 
-	var headerKeys []string
-	if headers && len(rows) > 0 {
-		if m, ok := rows[0].(map[string]interface{}); ok {
-			headerKeys = nodebase.SortedKeys(m)
-			if err := w.Write(headerKeys); err != nil {
-				return "", err
+	cols := n.namedColumns()
+	if cols == nil {
+		for _, row := range rows {
+			if m, ok := row.(map[string]interface{}); ok {
+				cols = nodebase.SortedKeys(m)
+				break
 			}
 		}
+	}
+
+	if cols != nil && len(rows) > 0 && n.writeHeader(st) {
+		if err := w.Write(cols); err != nil {
+			return "", err
+		}
+		st.hdrSent = true
 	}
 
 	for _, row := range rows {
 		var record []string
 		switch r := row.(type) {
 		case map[string]interface{}:
-			keys := headerKeys
+			keys := cols
 			if keys == nil {
 				keys = nodebase.SortedKeys(r)
 			}
 			for _, k := range keys {
-				record = append(record, fmt.Sprintf("%v", r[k]))
+				v, ok := r[k]
+				if !ok || v == nil {
+					record = append(record, "")
+				} else {
+					record = append(record, fmt.Sprintf("%v", v))
+				}
 			}
 		case []interface{}:
 			for _, cell := range r {
@@ -387,4 +535,16 @@ func serializeCSV(rows []interface{}, headers bool) (string, error) {
 		return "", err
 	}
 	return buf.String(), nil
+}
+
+// writeHeader reports whether this output should carry a column-name
+// header row per the hdrout setting; the caller holds st.mu.
+func (n *CSVNode) writeHeader(st *csvState) bool {
+	switch n.config.HdrOut {
+	case "all":
+		return true
+	case "once":
+		return !st.hdrSent
+	}
+	return false
 }

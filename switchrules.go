@@ -26,9 +26,18 @@ func EvalSwitchRule(rule SwitchRule, payload nodestore.MessageInterface) bool {
 func EvalSwitchRuleCtx(rule SwitchRule, payload nodestore.MessageInterface, rc *RuleContext) bool {
 	var value interface{}
 	found := false
-	if rule.PropertyType == "flow" || rule.PropertyType == "global" {
+	switch {
+	case rule.PropertyType == "flow" || rule.PropertyType == "global":
 		value, found = rc.ContextGet(rule.PropertyType, rule.Property)
-	} else if payload != nil {
+	case rule.PropertyType == "jsonata":
+		// The switch value is a sequence-expression evaluated against
+		// the whole message (Node-RED propertyType "jsonata").
+		if payload != nil {
+			if v, err := EvalSeqExpr(rule.Property, MessageMap(payload), nil); err == nil && v != nil {
+				value, found = v, true
+			}
+		}
+	case payload != nil:
 		if rule.Property == "" {
 			// Node-RED parity: "msg.payload" evaluates the payload
 			// itself — works for scalar payloads too.
@@ -62,12 +71,82 @@ func EvalSwitchRuleCtx(rule SwitchRule, payload nodestore.MessageInterface, rc *
 		return found && switchContains(value, expected)
 	case "empty":
 		return !found || isEmptyValue(value)
+	case "nempty":
+		return found && !isEmptyValue(value)
 	case "regex":
 		return found && switchRegex(value, rule.Value)
 	case "istype":
 		return switchType(value, found, rule.Value)
+	case "true":
+		b, ok := value.(bool)
+		return found && ok && b
+	case "false":
+		b, ok := value.(bool)
+		return found && ok && !b
+	case "null":
+		// A missing property is "undefined", not null — like
+		// Node-RED the rule does not match in that case.
+		return found && value == nil
+	case "nnull":
+		return !found || value != nil
+	case "else":
+		// Catch-all: the standalone rule always matches. The switch
+		// node gives it real semantics — an else output only receives
+		// messages no other rule claimed.
+		return true
+	case "btwn":
+		// Inclusive range check against Value and Value2.
+		return found &&
+			switchCompare(value, expected) >= 0 &&
+			switchCompare(value, rule.expectedValue2(payload, rc)) <= 0
+	case "hask":
+		// The resolved property is an object that has the named key.
+		if m, ok := value.(map[string]interface{}); ok && found {
+			_, has := m[rule.Value]
+			return has
+		}
+		return false
+	case "head":
+		// Sequence op: parts.index within the first Value members.
+		index, _, ok := switchParts(payload)
+		n, err := ToFloat(expected)
+		return ok && err == nil && float64(index) < n
+	case "tail":
+		// Sequence op: parts.index within the last Value members.
+		index, count, ok := switchParts(payload)
+		n, err := ToFloat(expected)
+		return ok && err == nil && float64(index) >= float64(count)-n
+	case "index":
+		// Sequence op: parts.index inside the [Value, Value2] range.
+		index, _, ok := switchParts(payload)
+		if !ok {
+			return false
+		}
+		v1, err1 := ToFloat(expected)
+		v2, err2 := ToFloat(rule.expectedValue2(payload, rc))
+		return err1 == nil && err2 == nil &&
+			float64(index) >= v1 && float64(index) <= v2
 	}
 	return false
+}
+
+// switchParts extracts msg.parts sequence metadata for the head, tail
+// and index operators. ok is false when the message carries no usable
+// parts.index (not part of a sequence).
+func switchParts(payload nodestore.MessageInterface) (index, count int, ok bool) {
+	if payload == nil {
+		return 0, 0, false
+	}
+	parts, isMap := payload.GetMetadata()["parts"].(map[string]interface{})
+	if !isMap {
+		return 0, 0, false
+	}
+	idx, err := ToFloat(parts["index"])
+	if err != nil {
+		return 0, 0, false
+	}
+	cnt, _ := ToFloat(parts["count"])
+	return int(idx), int(cnt), true
 }
 
 // switchRegex matches the value's string form against a regular
@@ -195,42 +274,60 @@ func isEmptyValue(value interface{}) bool {
 // SwitchRule is a single ordered rule evaluated against the incoming
 // payload. Property is a dotted path into msg.Payload (e.g. "path" or
 // "body.user.role") — or a context key when PropertyType is
-// "flow"/"global". Rule index i maps to output port "output_{i+1}".
+// "flow"/"global", or a sequence expression evaluated against the
+// whole message when PropertyType is "jsonata". Rule index i maps to
+// output port "output_{i+1}".
 // ValueType is Node-RED's vt: how Value is interpreted — "str"
 // (default), "num", "bool", "json", "msg" (a message property path),
 // "env" (environment variable name) or "flow"/"global" (context key).
+// Value2/Value2Type hold the second comparison value (Node-RED's
+// v2/vt2) used by the range ops "btwn" and "index".
 type SwitchRule struct {
 	Property     string `json:"property"`
 	PropertyType string `json:"propertyType,omitempty"` // ""|"msg" (default) | "flow" | "global"
-	Op           string `json:"op"`                     // eq | neq | gt | lt | lte | gte | contains | empty | regex | istype
+	Op           string `json:"op"`                     // eq | neq | gt | lt | lte | gte | contains | empty | nempty | regex | istype | true | false | null | nnull | else | btwn | hask | head | tail | index
 	Value        string `json:"value"`
 	ValueType    string `json:"valueType,omitempty"`
+	Value2       string `json:"value2,omitempty"`
+	Value2Type   string `json:"value2Type,omitempty"`
 }
 
 // expectedValue resolves the rule's comparison value per ValueType —
 // Node-RED's typedInput semantics (v interpreted as vt). Context and
 // env lookups go through rc (nil disables them).
 func (r SwitchRule) expectedValue(payload nodestore.MessageInterface, rc *RuleContext) interface{} {
-	switch r.ValueType {
+	return resolveRuleValue(r.Value, r.ValueType, payload, rc)
+}
+
+// expectedValue2 is expectedValue for the second range bound (v2/vt2).
+func (r SwitchRule) expectedValue2(payload nodestore.MessageInterface, rc *RuleContext) interface{} {
+	return resolveRuleValue(r.Value2, r.Value2Type, payload, rc)
+}
+
+// resolveRuleValue applies typedInput semantics to a raw rule value:
+// env/flow/global lookups go through rc, num/bool/json coerce the
+// string, msg reads a message property, anything else stays a string.
+func resolveRuleValue(value, valueType string, payload nodestore.MessageInterface, rc *RuleContext) interface{} {
+	switch valueType {
 	case "env":
-		v, _ := rc.Env(r.Value)
+		v, _ := rc.Env(value)
 		return v
 	case "flow", "global":
-		v, _ := rc.ContextGet(r.ValueType, r.Value)
+		v, _ := rc.ContextGet(valueType, value)
 		return v
 	case "num":
-		if f, ok := ParseNumericString(r.Value); ok {
+		if f, ok := ParseNumericString(value); ok {
 			return f
 		}
-		return r.Value
+		return value
 	case "bool":
-		return r.Value == "true" || r.Value == "1"
+		return value == "true" || value == "1"
 	case "json":
 		var v interface{}
-		if err := json.Unmarshal([]byte(r.Value), &v); err == nil {
+		if err := json.Unmarshal([]byte(value), &v); err == nil {
 			return v
 		}
-		return r.Value
+		return value
 	case "msg":
 		// The comparison value is itself read from the message —
 		// "payload"/"payload.x" resolve into Data like Property,
@@ -238,7 +335,7 @@ func (r SwitchRule) expectedValue(payload nodestore.MessageInterface, rc *RuleCo
 		if payload == nil {
 			return nil
 		}
-		path := r.Value
+		path := value
 		if path == "payload" {
 			return payload.GetPayload()
 		}
@@ -257,7 +354,7 @@ func (r SwitchRule) expectedValue(payload nodestore.MessageInterface, rc *RuleCo
 			return v
 		}
 		return nil
-	default: // "", "str", "jsonata" (until the JSONata seam lands)
-		return r.Value
+	default: // "", "str"
+		return value
 	}
 }

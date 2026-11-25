@@ -29,8 +29,28 @@ func TestXMLParse(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected user map, got %v", m)
 	}
-	if user["@id"] != "7" || user["name"] != "bob" {
+	attrs, _ := user["$"].(map[string]interface{})
+	names, _ := user["name"].([]interface{})
+	if attrs["id"] != "7" || len(names) != 1 || names[0] != "bob" {
 		t.Fatalf("parsed xml wrong: %v", user)
+	}
+}
+
+// TestXMLParseExplicitArrayFalse covers the msg.options override —
+// with explicitArray:false children collapse to scalars.
+func TestXMLParseExplicitArrayFalse(t *testing.T) {
+	n := newNode(&XMLConfig{})
+	msg := nodestore.NewMessage().SetPayload(`<fruit id="100"><kind>Apple</kind></fruit>`)
+	msg.SetMetadata(map[string]interface{}{
+		"options": map[string]interface{}{"explicitArray": false},
+	})
+	if _, err := n.Execute(context.Background(), msg); err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	fruit := msg.GetPayload().(map[string]interface{})["fruit"].(map[string]interface{})
+	attrs, _ := fruit["$"].(map[string]interface{})
+	if attrs["id"] != "100" || fruit["kind"] != "Apple" {
+		t.Fatalf("explicitArray:false parse wrong: %v", fruit)
 	}
 }
 

@@ -11,7 +11,6 @@ import (
 	xhtml "golang.org/x/net/html"
 	"strings"
 	"sync/atomic"
-	"time"
 )
 
 //go:embed editor.html
@@ -64,13 +63,19 @@ var schema = map[string]interface{}{
 			"title":   "Output",
 			"enum":    []string{"single", "multi"},
 			"default": "single",
-			"description": "single: one parts-tagged message per match; " +
-				"multi: one message with an array payload",
+			"description": "single: one message with an array payload; " +
+				"multi: one parts-tagged message per match",
 		},
 		"property": map[string]interface{}{
 			"type":        "string",
 			"title":       "Property",
 			"description": "Message property holding the HTML",
+			"default":     "payload",
+		},
+		"outproperty": map[string]interface{}{
+			"type":        "string",
+			"title":       "Output Property",
+			"description": "Message property the extraction is written to (defaults to property)",
 			"default":     "payload",
 		},
 	},
@@ -92,13 +97,16 @@ type HTMLConfig struct {
 	// default), "text" (element text), "val" (the value attribute),
 	// or any other string naming an attribute (Node-RED semantics).
 	Ret string `json:"ret"`
-	// As selects the output shape: "single" (one message per match,
-	// parts-tagged — Node-RED default) or "multi" (one message whose
-	// payload is an array of matches).
+	// As selects the output shape: "single" (one message whose payload
+	// is an array of matches — Node-RED default) or "multi" (one
+	// parts-tagged message per match).
 	As string `json:"as"`
 	// Property is the message property holding the HTML
 	// (default "payload").
 	Property string `json:"property"`
+	// OutProperty is the message property the extraction is written to
+	// (defaults to Property).
+	OutProperty string `json:"outproperty"`
 }
 
 // HTMLNode extracts elements/text/attributes from an HTML payload.
@@ -119,9 +127,10 @@ func NewHTMLNode(node nodestore.NodeInterface, config *HTMLConfig) *HTMLNode {
 	}
 }
 
-// Execute parses the payload HTML and evaluates the selector. "multi"
-// returns an array payload directly; "single" stashes matches and
-// returns an empty-Data shell expanded by Expand.
+// Execute parses the payload HTML and evaluates the selector. "single"
+// (the default) writes an array of matches to the output property;
+// "multi" stashes matches and returns a shell expanded by Expand into
+// one parts-tagged message per match.
 func (n *HTMLNode) Execute(ctx context.Context, input nodestore.MessageInterface) (nodestore.MessageInterface, error) {
 	property := n.config.Property
 	if property == "" {
@@ -141,14 +150,25 @@ func (n *HTMLNode) Execute(ctx context.Context, input nodestore.MessageInterface
 		return nil, fmt.Errorf("html node: %q is not a string", property)
 	}
 
+	// The configured selector may be left blank, in which case the
+	// incoming message supplies it via msg.select.
+	selector := n.config.Tag
+	if selector == "" {
+		if md := input.GetMetadata(); md != nil {
+			selector, _ = md["select"].(string)
+		}
+	}
+	if selector == "" {
+		return nil, fmt.Errorf("html node: no selector (set tag or msg.select)")
+	}
+	sel, err := parseCSSSelector(selector)
+	if err != nil {
+		return nil, fmt.Errorf("html node: %w", err)
+	}
+
 	root, err := xhtml.Parse(strings.NewReader(doc))
 	if err != nil {
 		return nil, fmt.Errorf("html node parse failed: %w", err)
-	}
-
-	sel, err := parseCSSSelector(n.config.Tag)
-	if err != nil {
-		return nil, fmt.Errorf("html node: %w", err)
 	}
 	matches := findAll(root, sel)
 
@@ -157,21 +177,36 @@ func (n *HTMLNode) Execute(ctx context.Context, input nodestore.MessageInterface
 		n.matches = append(n.matches, n.extract(m))
 	}
 
-	if n.config.As == "multi" {
-		metadata := nodebase.CloneMetadata(input)
-		return nodestore.NewMessage().SetPayload(n.matches).SetMetadata(metadata).SetTimestamp(input.GetTimestamp()), nil
-	}
-
 	metadata := nodebase.CloneMetadata(input)
-	return nodestore.NewMessage().SetMetadata(metadata).SetTimestamp(time.Now()), nil
+	out := nodestore.NewMessage().SetMetadata(metadata).SetTimestamp(input.GetTimestamp())
+	if n.config.As == "multi" {
+		return out, nil // expanded per match by Expand
+	}
+	nodebase.NodeSetProperty(out, n.outProperty(), n.matches)
+	return out, nil
+}
+
+// outProperty returns the property the extraction is written to.
+func (n *HTMLNode) outProperty() string {
+	if n.config.OutProperty != "" {
+		return n.config.OutProperty
+	}
+	if n.config.Property != "" {
+		return n.config.Property
+	}
+	return "payload"
 }
 
 // extract renders one matched element per the configured ret mode.
+// "html" produces the element's inner HTML — for an element whose only
+// content is text that equals its text content.
 func (n *HTMLNode) extract(m *xhtml.Node) interface{} {
 	switch n.config.Ret {
 	case "", "html":
 		var b strings.Builder
-		_ = xhtml.Render(&b, m)
+		for c := m.FirstChild; c != nil; c = c.NextSibling {
+			_ = xhtml.Render(&b, c)
+		}
 		return b.String()
 	case "text":
 		return nodeText(m)
@@ -186,7 +221,7 @@ func (n *HTMLNode) extract(m *xhtml.Node) interface{} {
 // (same parts {id,type,index,count} shape the split node produces so a
 // downstream join can reassemble).
 func (n *HTMLNode) Expand(output nodestore.MessageInterface) []nodestore.MessageInterface {
-	if n.config.As == "multi" {
+	if n.config.As != "multi" {
 		return []nodestore.MessageInterface{output}
 	}
 	if len(n.matches) == 0 {
@@ -200,7 +235,7 @@ func (n *HTMLNode) Expand(output nodestore.MessageInterface) []nodestore.Message
 		if p.GetMetadata() == nil {
 			p.SetMetadata(map[string]interface{}{})
 		}
-		p.SetPayload(v)
+		nodebase.NodeSetProperty(p, n.outProperty(), v)
 		parts := map[string]interface{}{
 			"id":    groupID,
 			"type":  "html",
@@ -221,11 +256,12 @@ func (n *HTMLNode) Validate() error {
 	if err := n.BaseNode.Validate(); err != nil {
 		return err
 	}
-	if strings.TrimSpace(n.config.Tag) == "" {
-		return errors.New("html node requires a selector (tag)")
-	}
-	if _, err := parseCSSSelector(n.config.Tag); err != nil {
-		return fmt.Errorf("html node: %w", err)
+	if n.config.Tag != "" {
+		// An empty tag is allowed: the selector then comes from
+		// msg.select at runtime.
+		if _, err := parseCSSSelector(n.config.Tag); err != nil {
+			return fmt.Errorf("html node: %w", err)
+		}
 	}
 	switch n.config.As {
 	case "", "single", "multi":

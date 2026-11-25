@@ -47,7 +47,81 @@ var schema = map[string]interface{}{
 		"broker": map[string]string{
 			"type":        "string",
 			"title":       "Broker",
-			"description": "Broker address as host:port or tcp://host:port",
+			"description": "Broker address as host:port or tcp://host:port, or an mqttBroker config node id (Node-RED shared broker)",
+		},
+		"clientid": map[string]string{
+			"type":        "string",
+			"title":       "Client ID",
+			"description": "MQTT client identifier; empty lets the library generate one",
+		},
+		"cleansession": map[string]interface{}{
+			"type":    "boolean",
+			"title":   "Clean Session",
+			"default": true,
+		},
+		"keepalive": map[string]interface{}{
+			"type":        "integer",
+			"title":       "Keep Alive",
+			"description": "MQTT keepalive in seconds; 0 uses the library default",
+			"default":     0,
+		},
+		"usetls": map[string]interface{}{
+			"type":        "boolean",
+			"title":       "Use TLS",
+			"description": "Dial the broker over TLS (implied by an ssl:// address)",
+			"default":     false,
+		},
+		"tlsinsecure": map[string]interface{}{
+			"type":        "boolean",
+			"title":       "Skip Peer Verification",
+			"description": "Disables broker certificate verification (insecure opt-out)",
+			"default":     false,
+		},
+		"tls": map[string]string{
+			"type":        "string",
+			"title":       "TLS Config",
+			"description": "Optional tlsConfig node id for shared certificate material",
+		},
+		"tlsca": map[string]string{
+			"type":        "string",
+			"title":       "CA Bundle",
+			"description": "Optional PEM CA bundle used to verify the broker",
+		},
+		"tlscert": map[string]string{
+			"type":        "string",
+			"title":       "Certificate",
+			"description": "PEM client certificate; tlscert and tlskey must be set together",
+		},
+		"tlskey": map[string]string{
+			"type":        "string",
+			"title":       "Private Key",
+			"description": "PEM private key paired with the certificate",
+		},
+		"tlsservername": map[string]string{
+			"type":        "string",
+			"title":       "Server Name",
+			"description": "SNI / verification hostname override (default: the dialed host)",
+		},
+		"willtopic": map[string]string{
+			"type":        "string",
+			"title":       "Will Topic",
+			"description": "Last-will topic the broker publishes when this client drops ungracefully",
+		},
+		"willpayload": map[string]string{
+			"type":        "string",
+			"title":       "Will Payload",
+			"description": "Last-will message",
+		},
+		"willqos": map[string]interface{}{
+			"type":    "integer",
+			"title":   "Will QoS",
+			"enum":    []int{0, 1, 2},
+			"default": 0,
+		},
+		"willretain": map[string]interface{}{
+			"type":    "boolean",
+			"title":   "Will Retain",
+			"default": false,
 		},
 		"topic": map[string]string{
 			"type":        "string",
@@ -81,21 +155,18 @@ var schema = map[string]interface{}{
 	"required": []string{"broker"},
 }
 
-// MQTTOutConfig holds configuration for the mqttOut node.
+// MQTTOutConfig holds configuration for the mqttOut node. The embedded
+// MQTTConnConfig carries the connection block (broker address or an
+// mqttBroker config-node id, credentials, clientID, clean session,
+// keepalive, TLS and last-will fields).
 type MQTTOutConfig struct {
-	// Broker is host:port or a full URL (tcp://host:port).
-	Broker string `json:"broker"`
+	nodebase.MQTTConnConfig
 	// Topic is the publish topic (the message's topic metadata overrides it).
 	Topic string `json:"topic"`
 	// QoS is the publish quality of service (0|1|2).
 	QoS int `json:"qos"`
 	// Retain sets the MQTT retain flag on published messages.
 	Retain bool `json:"retain"`
-	// Username/Password are optional broker credentials. They are
-	// credential-typed fields: stored outside the exported flow
-	// document and merged back in at deploy time.
-	Username string `json:"username,omitempty"`
-	Password string `json:"password,omitempty"`
 }
 
 // MQTTOutNode publishes the message Data to a broker topic and passes
@@ -129,7 +200,11 @@ func (n *MQTTOutNode) Execute(ctx context.Context, input nodestore.MessageInterf
 		return nodebase.NewMQTTClientPool()
 	}).(*nodebase.MQTTClientPool)
 
-	client, err := pool.Client(n.config.Broker, "mqtt-out-"+n.GetID(), n.config.Username, n.config.Password)
+	opts, err := nodebase.ResolveMQTTOpts(n.host, n.workflowID, &n.config.MQTTConnConfig)
+	if err != nil {
+		return nil, err
+	}
+	client, err := pool.Client(opts, "mqtt-out-"+n.GetID())
 	if err != nil {
 		return nil, err
 	}
@@ -150,7 +225,10 @@ func (n *MQTTOutNode) Validate() error {
 		return err
 	}
 	if strings.TrimSpace(n.config.Broker) == "" {
-		return errors.New("mqttOut requires a broker (host:port)")
+		return errors.New("mqttOut requires a broker (host:port or mqttBroker node id)")
+	}
+	if (n.config.TLSCert == "") != (n.config.TLSKey == "") {
+		return errors.New("mqttOut: tlscert and tlskey must be configured together")
 	}
 	return nil
 }

@@ -37,6 +37,7 @@ import (
 	_ "github.com/dracory/nodebase/log"
 	_ "github.com/dracory/nodebase/mailin"
 	_ "github.com/dracory/nodebase/mailout"
+	_ "github.com/dracory/nodebase/mqttbroker"
 	_ "github.com/dracory/nodebase/mqttin"
 	_ "github.com/dracory/nodebase/mqttout"
 	_ "github.com/dracory/nodebase/pdf"

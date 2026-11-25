@@ -4,9 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
-	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 
@@ -24,17 +22,19 @@ type MQTTClientPool struct {
 
 const MQTTClientsKey = "__mqttClients__"
 
-// client returns a connected client for broker, connecting and caching
-// it on first use. The pool key includes the username so nodes against
-// the same broker with different credentials get separate connections.
-func (p *MQTTClientPool) Client(broker, clientID, username, password string) (mqtt.Client, error) {
+// Client returns a connected client for the resolved dial options,
+// connecting and caching it on first use. The pool key includes the
+// username, client id and a TLS marker so nodes against the same
+// broker with different credentials, identities or transports get
+// separate connections.
+func (p *MQTTClientPool) Client(opts *MQTTOpts, clientID string) (mqtt.Client, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	key := broker + "\x00" + username
+	key := opts.Broker + "\x00" + opts.Username + "\x00" + firstNonEmpty(opts.ClientID, clientID) + "\x00" + fmt.Sprint(opts.TLS != nil)
 	if c, ok := p.clients[key]; ok && c.IsConnected() {
 		return c, nil
 	}
-	c, err := MQTTConnect(broker, clientID, username, password)
+	c, err := MQTTConnectOpts(opts, clientID)
 	if err != nil {
 		return nil, err
 	}
@@ -44,32 +44,15 @@ func (p *MQTTClientPool) Client(broker, clientID, username, password string) (mq
 
 // MQTTConnect builds a paho client for the given broker (host:port is
 // normalized to tcp://host:port) and connects, surfacing broker
-// unavailability as an error.
+// unavailability as an error. Kept as the plain-address convenience
+// form; richer connections go through MQTTConnectOpts.
 func MQTTConnect(broker, clientID, username, password string) (mqtt.Client, error) {
-	addr := strings.TrimSpace(broker)
-	if addr == "" {
-		return nil, errors.New("mqtt broker address is empty")
-	}
-	if !strings.Contains(addr, "://") {
-		addr = "tcp://" + addr
-	}
-	opts := mqtt.NewClientOptions().
-		AddBroker(addr).
-		SetClientID(clientID).
-		SetAutoReconnect(true).
-		SetConnectTimeout(10 * time.Second)
-	if username != "" {
-		opts.SetUsername(username).SetPassword(password)
-	}
-	client := mqtt.NewClient(opts)
-	token := client.Connect()
-	if !token.WaitTimeout(12 * time.Second) {
-		return nil, fmt.Errorf("mqtt connect to %s timed out", addr)
-	}
-	if err := token.Error(); err != nil {
-		return nil, fmt.Errorf("mqtt connect to %s failed: %w", addr, err)
-	}
-	return client, nil
+	return MQTTConnectOpts(&MQTTOpts{
+		Broker:       broker,
+		Username:     username,
+		Password:     password,
+		CleanSession: true,
+	}, clientID)
 }
 
 // ClampQoS constrains QoS to the MQTT range 0-2.

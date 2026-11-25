@@ -2,6 +2,7 @@
 package yaml
 
 import (
+	"bytes"
 	"context"
 	_ "embed"
 	"fmt"
@@ -164,11 +165,18 @@ func (n *YAMLNode) convert(value interface{}) (interface{}, error) {
 
 	switch action {
 	case "str":
-		raw, err := yaml.Marshal(value)
-		if err != nil {
+		// js-yaml indents nested content by two spaces; yaml.v3's
+		// default is four, so drive the encoder explicitly.
+		var buf bytes.Buffer
+		enc := yaml.NewEncoder(&buf)
+		enc.SetIndent(2)
+		if err := enc.Encode(value); err != nil {
 			return nil, fmt.Errorf("yaml stringify failed: %w", err)
 		}
-		return string(raw), nil
+		if err := enc.Close(); err != nil {
+			return nil, fmt.Errorf("yaml stringify failed: %w", err)
+		}
+		return buf.String(), nil
 	case "obj":
 		s, ok := value.(string)
 		if !ok {
