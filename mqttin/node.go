@@ -148,7 +148,7 @@ type MQTTInNode struct {
 // Execute connects to the broker and subscribes. The connect happens
 // synchronously so an unreachable broker surfaces as a deploy error.
 func (n *MQTTInNode) Execute(ctx context.Context, input nodestore.MessageInterface) (nodestore.MessageInterface, error) {
-	client, err := nodebase.MQTTConnect(n.config.Broker, "goflow-in-"+n.GetID(), n.config.Username, n.config.Password)
+	client, err := nodebase.MQTTConnect(n.config.Broker, "mqtt-in-"+n.GetID(), n.config.Username, n.config.Password)
 	if err != nil {
 		return nil, err
 	}

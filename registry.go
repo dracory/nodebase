@@ -9,7 +9,7 @@ import (
 	nodestore "github.com/dracory/nodestore"
 )
 
-// This file holds the node type registry — the GoFlow equivalent of
+// This file holds the node type registry — the equivalent of
 // Node-RED's RED.nodes.registerType(name, ctor). Both the built-in
 // node folders (nodes/<type>) and third-party packs register through
 // it; any runner then deploys registered types through the same

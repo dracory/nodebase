@@ -5,10 +5,6 @@ built-in Node-RED-style pack (inject, function, switch, http, tcp/udp,
 mqtt, file/fs, db, queue, split/join, …) plus the `NodeHost` contract
 that lets any runner host them and anyone write compatible packs.
 
-> Currently developed inside the goflow module as `pkg/nodestore/nodes`
-> (to be renamed `nodebase`); this repository is the extraction target
-> once the package is fully working.
-
 ## Why a separate package
 
 Nodes are the shared vocabulary between storage and runtime:

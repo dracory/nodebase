@@ -129,7 +129,7 @@ func (n *MQTTOutNode) Execute(ctx context.Context, input nodestore.MessageInterf
 		return nodebase.NewMQTTClientPool()
 	}).(*nodebase.MQTTClientPool)
 
-	client, err := pool.Client(n.config.Broker, "goflow-out-"+n.GetID(), n.config.Username, n.config.Password)
+	client, err := pool.Client(n.config.Broker, "mqtt-out-"+n.GetID(), n.config.Username, n.config.Password)
 	if err != nil {
 		return nil, err
 	}

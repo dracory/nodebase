@@ -126,7 +126,7 @@ func (n *PDFNode) Execute(ctx context.Context, in nodestore.MessageInterface) (n
 
 func (n *PDFNode) render(data interface{}) ([]byte, error) {
 	doc := gofpdf.New("P", "mm", "A4", "")
-	doc.SetCreator("GoFlow pdf node", true)
+	doc.SetCreator("pdf node", true)
 	doc.AddPage()
 	doc.SetFont("Helvetica", "", 11)
 

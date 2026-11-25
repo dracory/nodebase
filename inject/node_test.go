@@ -30,8 +30,8 @@ func TestInjectPayloadTypes(t *testing.T) {
 	if d := build(&InjectConfig{Payload: "true", PayloadType: "bool"}).GetPayload(); d != true {
 		t.Fatalf("bool payload: got %v", d)
 	}
-	t.Setenv("GOFLOW_TEST_ENV", "seekrit")
-	if d := build(&InjectConfig{Payload: "GOFLOW_TEST_ENV", PayloadType: "env"}).GetPayload(); d != "seekrit" {
+	t.Setenv("NODEBASE_TEST_ENV", "seekrit")
+	if d := build(&InjectConfig{Payload: "NODEBASE_TEST_ENV", PayloadType: "env"}).GetPayload(); d != "seekrit" {
 		t.Fatalf("env payload: got %v", d)
 	}
 }

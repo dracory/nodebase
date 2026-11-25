@@ -7,7 +7,7 @@ import (
 )
 
 // This file holds the runtime observability contracts an admin surface
-// (e.g. pkg/nodeadmin) is written against. They are engine-agnostic —
+// (e.g. nodeadmin) is written against. They are engine-agnostic —
 // like contracts.go, nothing here may depend on a concrete runner.
 // noderunner's *Queue satisfies QueueInspector and its run journal is
 // made of RunJournalEntry values, so any runner exposing these shapes

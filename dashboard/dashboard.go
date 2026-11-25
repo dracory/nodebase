@@ -124,7 +124,7 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	if h.auth != nil {
 		if _, ok := h.auth(r); !ok {
-			w.Header().Set("WWW-Authenticate", `Basic realm="goflow"`)
+			w.Header().Set("WWW-Authenticate", `Basic realm="nodebase"`)
 			http.Error(w, "authentication required", http.StatusUnauthorized)
 			return
 		}

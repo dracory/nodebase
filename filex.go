@@ -16,7 +16,7 @@ import (
 
 // resolveFilePath applies the host's FileRoot sandbox. When FileRoot is
 // empty the path passes through unchanged (unrestricted — document at
-// deploy time via GOFLOW_FILE_ROOT). When set, the cleaned absolute path
+// deploy time by the consuming application). When set, the cleaned absolute path
 // must stay under the root; ".." escapes are rejected.
 func ResolveFilePath(root, name string) (string, error) {
 	if name == "" {

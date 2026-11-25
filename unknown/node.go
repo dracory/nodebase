@@ -41,7 +41,7 @@ var schema = map[string]interface{}{
 	"properties":  map[string]interface{}{},
 }
 
-// UnknownNode is the executor for node types GoFlow does not implement
+// UnknownNode is the executor for node types the engine does not implement
 // (e.g. an imported Node-RED contrib node, or the explicit "unknown"
 // palette type). Node-RED parity: the node loads visibly marked, keeps
 // its raw config so a save/export round-trips it verbatim, and is

@@ -32,7 +32,7 @@ func init() {
 		Descriptor: nodebase.NodeDescriptor{
 			Type:        "exec",
 			Name:        "Exec",
-			Description: "Runs a system command (requires GOFLOW_ALLOW_EXEC=1)",
+			Description: "Runs a system command (requires the host to allow exec)",
 			Icon:        "server",
 			Category:    "Actions",
 			Set:         "core",
@@ -50,7 +50,7 @@ var schema = map[string]interface{}{
 		"command": map[string]string{
 			"type":        "string",
 			"title":       "Command",
-			"description": "Command line run through the system shell (requires GOFLOW_ALLOW_EXEC=1)",
+			"description": "Command line run through the system shell (requires the host to allow exec)",
 		},
 		"addpay": map[string]string{
 			"type":        "string",
@@ -94,7 +94,7 @@ type ExecConfig struct {
 //
 // SECURITY: arbitrary command execution is gated behind
 // WorkflowEngine.ExecAllowed() — the node fails with "exec disabled"
-// unless the flag is set (env GOFLOW_ALLOW_EXEC=1 wires it in main).
+// unless the flag is set (the consuming application wires it in main).
 // The addpay value is concatenated into the shell command line exactly
 // like Node-RED does, so even an enabled exec node is only as safe as
 // the messages routed into it.
@@ -132,7 +132,7 @@ func shellCommand(full string) (string, []string) {
 // Data with rc/stderr in Metadata.
 func (n *ExecNode) Execute(ctx context.Context, input nodestore.MessageInterface) (nodestore.MessageInterface, error) {
 	if n.host == nil || !n.host.ExecAllowed() {
-		return nil, errors.New("exec disabled: set AllowExec on the host (GOFLOW_ALLOW_EXEC=1)")
+		return nil, errors.New("exec disabled: set AllowExec on the host")
 	}
 	if strings.TrimSpace(n.config.Command) == "" {
 		return nil, errors.New("exec node requires a command")

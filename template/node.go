@@ -55,7 +55,7 @@ var schema = map[string]interface{}{
 			"title":       "Syntax",
 			"enum":        []string{"mustache", "gotemplate", "plain"},
 			"default":     "mustache",
-			"description": "mustache = Node-RED parity; gotemplate = Go text/template (goflow-only); plain = no rendering",
+			"description": "mustache = Node-RED parity; gotemplate = Go text/template (extension-only); plain = no rendering",
 		},
 		"template": map[string]interface{}{
 			"type":        "string",
@@ -85,14 +85,14 @@ var schema = map[string]interface{}{
 }
 
 // TemplateConfig holds configuration for the template node, mirroring
-// Node-RED's template node fields plus the goflow-only gotemplate
+// Node-RED's template node fields plus the extension-only gotemplate
 // syntax and the legacy Format alias.
 type TemplateConfig struct {
 	// Template is the template source; when empty, a runtime
 	// msg.template metadata property supplies it (Node-RED parity).
 	Template string `json:"template"`
 	// Syntax: "mustache" (default, Node-RED parity), "gotemplate"
-	// (goflow-only Go text/template against msg.payload), or "plain"
+	// (extension-only Go text/template against msg.payload), or "plain"
 	// (no rendering — the template text passes through verbatim).
 	Syntax string `json:"syntax"`
 	// Field is the target property: "payload" (default) or a dotted
@@ -105,13 +105,13 @@ type TemplateConfig struct {
 	// Output: "str" (default), "json" (parse the rendered text into
 	// JSON), or "yaml" (parse into a YAML value).
 	Output string `json:"output"`
-	// Format is the legacy goflow alias: "json" → Output "json",
+	// Format is the legacy engine alias: "json" → Output "json",
 	// "text" → Output "str". Ignored when Output is set.
 	Format string `json:"format"`
 }
 
 // TemplateNode renders a Mustache template against the message
-// (Node-RED parity), with Go text/template kept as a goflow-only
+// (Node-RED parity), with Go text/template kept as a extension-only
 // syntax option.
 type TemplateNode struct {
 	*nodebase.BaseNode
@@ -182,7 +182,7 @@ func (n *TemplateNode) Execute(ctx context.Context, input nodestore.MessageInter
 }
 
 // syntax resolves the effective syntax. "mustache" is the default for
-// parity with Node-RED imported flows. Pre-mustache goflow flows carry
+// parity with Node-RED imported flows. Pre-mustache flows carry
 // the legacy "format" field but no "syntax"; they keep the Go
 // text/template behaviour they were saved with.
 func (n *TemplateNode) syntax() string {
@@ -272,7 +272,7 @@ func parseContextField(field string) (key, store string) {
 }
 
 // renderGoTemplate renders Go text/template syntax against
-// msg.payload (goflow-only syntax; original behaviour).
+// msg.payload (extension-only syntax; original behaviour).
 func (n *TemplateNode) renderGoTemplate(tpl string, input nodestore.MessageInterface) (string, error) {
 	t, err := template.New(n.ID()).Parse(tpl)
 	if err != nil {

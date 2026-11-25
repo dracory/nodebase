@@ -28,7 +28,7 @@ func init() {
 		Descriptor: nodebase.NodeDescriptor{
 			Type:        "file",
 			Name:        "File",
-			Description: "Writes the payload to a file (optionally restricted by GOFLOW_FILE_ROOT)",
+			Description: "Writes the payload to a file (optionally restricted to a root directory)",
 			Icon:        "save",
 			Category:    "Storage",
 			Set:         "core",

@@ -364,7 +364,7 @@ func (n *FunctionNode) injectGlobals(vm *goja.Runtime, input nodestore.MessageIn
 	// host.NodeEnv for the first four; os.Getenv is the last). The
 	// OS fallback fails CLOSED: only a host that explicitly
 	// implements OSEnvAllowed() and returns true exposes process
-	// env (engine AllowOSEnv / GOFLOW_ALLOW_OS_ENV). Hosts without
+	// env (engine AllowOSEnv option). Hosts without
 	// the method get no os.Getenv at all — otherwise a flow author
 	// could read arbitrary process secrets via env.get.
 	envObj := map[string]interface{}{

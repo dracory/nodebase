@@ -14,7 +14,7 @@ import (
 )
 
 // This file defines the unified remote-filesystem seam (task
-// 2026_11_23_remote_fs): one small Fs interface feeding three
+// remote_fs): one small Fs interface feeding three
 // consumers — the queue "dir" backend (which now accepts Fs locators
 // like sftp://user@host/path), the fsIn node (poll a remote dir, emit
 // one message per new file — Enfocus Switch's FTP receive), and the

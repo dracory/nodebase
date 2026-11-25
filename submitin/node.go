@@ -81,7 +81,7 @@ var schema = map[string]interface{}{
 			"enum":    []string{"none", "admin"},
 			"default": "none",
 			"description": "admin: require HTTP Basic credentials from the admin auth file " +
-				"(GOFLOW_AUTH_FILE); the authenticated username lands in msg.submit.submittedBy",
+				"(the consuming application's auth-file env var); the authenticated username lands in msg.submit.submittedBy",
 		},
 	},
 }
@@ -244,12 +244,12 @@ func (n *SubmitNode) handleRequest(w http.ResponseWriter, r *http.Request) {
 	submittedBy := ""
 	if n.config.Auth == "admin" {
 		if n.host == nil || n.host.HTTPAuthFunc() == nil {
-			http.Error(w, "submit auth=admin but no authenticator is configured (set GOFLOW_AUTH_FILE)", http.StatusServiceUnavailable)
+			http.Error(w, "submit auth=admin but no authenticator is configured (configure an auth file on the host)", http.StatusServiceUnavailable)
 			return
 		}
 		user, ok := n.host.HTTPAuthFunc()(r)
 		if !ok {
-			w.Header().Set("WWW-Authenticate", `Basic realm="goflow"`)
+			w.Header().Set("WWW-Authenticate", `Basic realm="nodebase"`)
 			http.Error(w, "authentication required", http.StatusUnauthorized)
 			return
 		}

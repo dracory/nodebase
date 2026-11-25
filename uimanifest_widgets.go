@@ -76,7 +76,7 @@ func describeUIChart(node nodestore.NodeInterface) UIWidgetManifest {
 }
 
 // defaultUIButtonPayload is emitted when uiButton has no configured
-// payload — Node-RED ui_button sends its configured payload; GoFlow's
+// payload — Node-RED ui_button sends its configured payload; the engine's
 // editor default is "clicked" so a freshly dropped button does
 // something observable.
 const defaultUIButtonPayload = "clicked"
