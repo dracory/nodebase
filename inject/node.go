@@ -70,11 +70,33 @@ var schema = map[string]interface{}{
 			"description": "Inject the payload immediately when the workflow is deployed",
 			"default":     false,
 		},
+		"onceDelay": map[string]interface{}{
+			"type":        "number",
+			"title":       "After a Delay of",
+			"description": "Seconds to wait before the initial inject (Node-RED's onceDelay, default 0.1)",
+			"default":     0.1,
+			"minimum":     0,
+			"showIf":      map[string]string{"once": "true"},
+		},
+		"repeatType": map[string]interface{}{
+			"type":    "string",
+			"title":   "Repeat",
+			"default": "none",
+			"options": []map[string]interface{}{
+				{"value": "none", "title": "None",
+					"description": "No automatic repeat — fire manually or once on deploy"},
+				{"value": "interval", "title": "Interval",
+					"description": "Repeat every fixed period"},
+				{"value": "times", "title": "At Specific Times",
+					"description": "Fire at up to three times of day, optionally on selected weekdays"},
+			},
+		},
 		"interval": map[string]interface{}{
 			"type":        "number",
 			"title":       "Interval",
 			"description": "Repeat period in Interval Units; 0 = no repeat",
 			"default":     0,
+			"showIf":      map[string]string{"repeatType": "interval"},
 		},
 		"intervalUnits": map[string]interface{}{
 			"type":        "string",
@@ -82,6 +104,32 @@ var schema = map[string]interface{}{
 			"enum":        []string{"s", "min", "hr", "day"},
 			"default":     "s",
 			"description": "Time unit for the repeat interval",
+			"showIf":      map[string]string{"repeatType": "interval"},
+		},
+		"times": map[string]interface{}{
+			"type":        "array",
+			"title":       "Times",
+			"description": "Times of day to fire (Node-RED's \"at a specific time\") — up to three entries",
+			"items": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"time": map[string]interface{}{
+						"type":        "string",
+						"title":       "Time",
+						"description": "Time of day, 24h local time — \"HH:MM\" (optional \":SS\")",
+					},
+					"days": map[string]interface{}{
+						"type":        "array",
+						"title":       "Weekdays",
+						"description": "Optional weekday filter — 0=Sunday to 6=Saturday; empty fires every day",
+						"items": map[string]interface{}{
+							"type": "integer",
+							"enum": []int{0, 1, 2, 3, 4, 5, 6},
+						},
+					},
+				},
+			},
+			"showIf": map[string]string{"repeatType": "times"},
 		},
 		"props": map[string]interface{}{
 			"type":        "array",
@@ -123,6 +171,28 @@ type InjectConfig struct {
 	Topic string `json:"topic"`
 	// Once fires the payload immediately on deploy
 	Once bool `json:"once"`
+	// OnceDelay delays the Once fire by this many seconds — the
+	// Node-RED field name, serialized as a number in exports (strings
+	// are accepted too). 0 or absent fires immediately.
+	OnceDelay interface{} `json:"onceDelay"`
+	// RepeatType is the editor's repeat-mode selector:
+	// "none" | "interval" | "times". It is a UI hint only — at run
+	// time the populated fields decide (see repeatMode), so imported
+	// configs that carry Node-RED's repeat/crontab fields still
+	// schedule correctly.
+	RepeatType string `json:"repeatType"`
+	// Repeat is Node-RED's repeat field — the fixed interval in
+	// seconds (serialized as a string in exports). Used when Interval
+	// is unset.
+	Repeat interface{} `json:"repeat"`
+	// Crontab is Node-RED's cron field — one or more "M H * * DOW"
+	// expressions (a leading seconds field is also accepted), split by
+	// newline or ";". Parsed into time-of-day entries on deploy when
+	// Times is empty.
+	Crontab string `json:"crontab"`
+	// Times is the "at a specific time" schedule — up to three
+	// time-of-day entries, each with an optional weekday filter.
+	Times []InjectTime `json:"times"`
 	// Interval is the repeat period (0 = no repeat), in IntervalUnits
 	Interval float64 `json:"interval"`
 	// IntervalUnits scales Interval: "s" (default) | "min" | "hr" | "day"
@@ -132,6 +202,17 @@ type InjectConfig struct {
 	// anything else lands in Metadata. When a "payload" prop exists it
 	// takes precedence over the legacy Payload/PayloadType fields.
 	Props []InjectProp `json:"props"`
+}
+
+// InjectTime is one "at a specific time" schedule entry: a wall-clock
+// time of day plus an optional weekday filter.
+type InjectTime struct {
+	// Time is "HH:MM" (24h local time); an optional ":SS" seconds
+	// field is accepted for finer-grained schedules.
+	Time string `json:"time"`
+	// Days filters the firing weekdays (0=Sunday … 6=Saturday).
+	// Empty fires every day.
+	Days []int `json:"days"`
 }
 
 // InjectProp is one entry of Node-RED's inject props array:
@@ -159,6 +240,31 @@ type InjectNode struct {
 	payloadTemplate string
 	propMetadata    map[string]interface{} // extra props entries → metadata
 	topic           string                 // resolved topic (config or props)
+	localSchedule   *injectSchedule        // schedule slot used when no host is wired
+	localOnce       sync.Once
+}
+
+// injectSchedule holds the per-run firing schedule. It lives in the
+// host's node-state slot because executors may be rebuilt between
+// deliveries: a re-executed inject sees `started` and does not
+// double-arm its timers.
+type injectSchedule struct {
+	mu      sync.Mutex
+	started bool
+	stopped bool
+	timers  []*time.Timer
+}
+
+// addTimer registers a scheduled timer; when the schedule is already
+// stopped the timer is cancelled immediately.
+func (s *injectSchedule) addTimer(t *time.Timer) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stopped {
+		t.Stop()
+		return
+	}
+	s.timers = append(s.timers, t)
 }
 
 // buildPayload materializes the message Data per the configured
@@ -240,28 +346,65 @@ func (n *InjectNode) Execute(ctx context.Context, input nodestore.MessageInterfa
 	}
 	n.payload = n.buildPayload()
 
-	if n.config.Once {
-		go n.fire()
+	// Arm the firing schedule. The armed flag lives in run state so a
+	// rebuilt executor does not double-arm timers on a later Execute.
+	sched := n.schedule()
+	sched.mu.Lock()
+	already := sched.started
+	if !already {
+		sched.started = true
+	}
+	sched.mu.Unlock()
+	if already {
+		return nodestore.NewMessage().SetPayload(map[string]interface{}{"status": "armed"}).SetTimestamp(time.Now()), nil
 	}
 
-	if n.config.Interval > 0 {
-		go func() {
-			ticker := time.NewTicker(time.Duration(n.config.Interval * float64(n.intervalUnit())))
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					n.fire()
-				case <-n.stopCh:
-					return
-				case <-ctx.Done():
-					return
-				}
-			}
-		}()
+	// Node-RED semantics: with once set the repeat schedule is armed
+	// inside the once-delay timeout — the first repeat tick is
+	// measured from the delayed initial fire, not from deploy.
+	startRepeater := func() {
+		if period := n.repeatInterval(); period > 0 {
+			go n.intervalLoop(ctx, period)
+		}
+		for _, e := range n.timeEntries() {
+			n.armTimeEntry(sched, e)
+		}
+	}
+
+	if n.config.Once {
+		if delay := n.onceDelay(); delay > 0 {
+			sched.addTimer(time.AfterFunc(delay, func() {
+				n.fire()
+				startRepeater()
+			}))
+		} else {
+			go func() {
+				n.fire()
+				startRepeater()
+			}()
+		}
+	} else {
+		startRepeater()
 	}
 
 	return nodestore.NewMessage().SetPayload(map[string]interface{}{"status": "armed"}).SetTimestamp(time.Now()), nil
+}
+
+// intervalLoop fires the payload on every tick until stopped or the
+// run context is cancelled.
+func (n *InjectNode) intervalLoop(ctx context.Context, period time.Duration) {
+	ticker := time.NewTicker(period)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			n.fire()
+		case <-n.stopCh:
+			return
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 // Fire injects a clone of the payload into the workflow — the
@@ -325,8 +468,286 @@ func (n *InjectNode) intervalUnit() time.Duration {
 	return time.Second
 }
 
-// Stop halts the interval ticker (idempotent)
+// schedule returns the per-run firing schedule — the host's state
+// slot when a host is wired, a per-executor fallback otherwise
+// (unit tests run inject nodes without a host).
+func (n *InjectNode) schedule() *injectSchedule {
+	if n.host == nil {
+		n.localOnce.Do(func() { n.localSchedule = &injectSchedule{} })
+		return n.localSchedule
+	}
+	return n.host.GetOrCreateNodeState(n.workflowID, n.GetID(), func() interface{} {
+		return &injectSchedule{}
+	}).(*injectSchedule)
+}
+
+// onceDelay returns the configured delay before the initial Once
+// fire (0 = fire immediately).
+func (n *InjectNode) onceDelay() time.Duration {
+	if v, ok := nodebase.ParseNumeric(n.config.OnceDelay); ok && v > 0 {
+		return time.Duration(v * float64(time.Second))
+	}
+	return 0
+}
+
+// repeatMode resolves which repeat style applies: "interval" (fixed
+// period), "times" (time-of-day schedule) or "none". RepeatType is
+// the editor's selector; when it is unset or "none" the raw fields
+// still win, so imported Node-RED nodes — which carry repeat/crontab
+// and no repeatType — schedule the same way Node-RED would run them.
+func (n *InjectNode) repeatMode() string {
+	switch n.config.RepeatType {
+	case "interval":
+		return "interval"
+	case "times":
+		return "times"
+	case "none":
+		if v, ok := nodebase.ParseNumeric(n.config.Repeat); ok && v > 0 {
+			return "interval"
+		}
+		if strings.TrimSpace(n.config.Crontab) != "" && len(n.config.Times) == 0 {
+			return "times"
+		}
+		return "none"
+	}
+	if n.config.Interval > 0 {
+		return "interval"
+	}
+	if v, ok := nodebase.ParseNumeric(n.config.Repeat); ok && v > 0 {
+		return "interval"
+	}
+	if len(n.config.Times) > 0 || strings.TrimSpace(n.config.Crontab) != "" {
+		return "times"
+	}
+	return "none"
+}
+
+// repeatInterval resolves the fixed repeat period: Interval scaled by
+// IntervalUnits, or Node-RED's Repeat field (always seconds).
+func (n *InjectNode) repeatInterval() time.Duration {
+	if n.repeatMode() != "interval" {
+		return 0
+	}
+	if n.config.Interval > 0 {
+		return time.Duration(n.config.Interval * float64(n.intervalUnit()))
+	}
+	if v, ok := nodebase.ParseNumeric(n.config.Repeat); ok && v > 0 {
+		return time.Duration(v * float64(time.Second))
+	}
+	return 0
+}
+
+// timeEntry is a resolved time-of-day schedule entry.
+type timeEntry struct {
+	hour, min, sec int
+	days           map[int]bool // weekday filter (time.Weekday); empty = every day
+}
+
+// timeEntries resolves the "at a specific time" schedule: the Times
+// list first, then Node-RED's Crontab field (both best-effort —
+// unparseable entries are skipped). Capped at three entries like
+// Node-RED's UI.
+func (n *InjectNode) timeEntries() []timeEntry {
+	if n.repeatMode() != "times" {
+		return nil
+	}
+	var out []timeEntry
+	for _, t := range n.config.Times {
+		e, ok := parseTimeOfDay(t.Time)
+		if !ok {
+			continue
+		}
+		e.days = daySet(t.Days)
+		out = append(out, e)
+	}
+	if len(out) == 0 {
+		out = parseCrontab(n.config.Crontab)
+	}
+	if len(out) > 3 {
+		out = out[:3]
+	}
+	return out
+}
+
+// armTimeEntry schedules the next fire of a time-of-day entry; the
+// timer re-arms itself after each fire so the entry repeats daily on
+// its allowed weekdays.
+func (n *InjectNode) armTimeEntry(sched *injectSchedule, e timeEntry) {
+	wait := nextTimeOfDay(time.Now(), e)
+	sched.addTimer(time.AfterFunc(wait, func() {
+		n.fire()
+		n.armTimeEntry(sched, e)
+	}))
+}
+
+// parseTimeOfDay parses "HH:MM" or "HH:MM:SS" (24h) into a timeEntry.
+func parseTimeOfDay(s string) (timeEntry, bool) {
+	parts := strings.Split(strings.TrimSpace(s), ":")
+	if len(parts) < 2 || len(parts) > 3 {
+		return timeEntry{}, false
+	}
+	h, errH := strconv.Atoi(parts[0])
+	m, errM := strconv.Atoi(parts[1])
+	sec := 0
+	if len(parts) == 3 {
+		v, err := strconv.Atoi(parts[2])
+		if err != nil {
+			return timeEntry{}, false
+		}
+		sec = v
+	}
+	if errH != nil || errM != nil || h < 0 || h > 23 || m < 0 || m > 59 || sec < 0 || sec > 59 {
+		return timeEntry{}, false
+	}
+	return timeEntry{hour: h, min: m, sec: sec}, true
+}
+
+// daySet converts a weekday list (0=Sunday … 6=Saturday) into a
+// lookup set. Empty or all-seven selections mean "every day".
+func daySet(days []int) map[int]bool {
+	if len(days) == 0 {
+		return nil
+	}
+	set := map[int]bool{}
+	for _, d := range days {
+		if d >= 0 && d <= 6 {
+			set[d] = true
+		}
+	}
+	if len(set) == 7 {
+		return nil
+	}
+	return set
+}
+
+// parseCrontab maps Node-RED's crontab field onto time-of-day
+// entries. Each expression is five fields ("M H DOM MON DOW") or six
+// with a leading seconds field; multiple expressions are split by
+// newline or ";". Day-of-month and month fields must be "*" (the
+// schedule is time-of-day based); minute/hour accept numbers, lists,
+// ranges and steps; the weekday field accepts the same or "*".
+// Anything else is skipped — a full cron engine is out of scope.
+func parseCrontab(expr string) []timeEntry {
+	var out []timeEntry
+	for _, line := range strings.FieldsFunc(expr, func(r rune) bool { return r == '\n' || r == ';' }) {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		sec := 0
+		if len(fields) == 6 {
+			if v, ok := cronSingle(fields[0]); ok {
+				sec = v
+			}
+			fields = fields[1:]
+		}
+		if len(fields) != 5 || fields[2] != "*" || fields[3] != "*" {
+			continue
+		}
+		mins := cronNumbers(fields[0], 0, 59)
+		hours := cronNumbers(fields[1], 0, 23)
+		if len(mins) != 1 || len(hours) == 0 {
+			continue
+		}
+		days := daySet(cronNumbers(fields[4], 0, 6))
+		for _, h := range hours {
+			out = append(out, timeEntry{hour: h, min: mins[0], sec: sec, days: days})
+		}
+	}
+	return out
+}
+
+// cronSingle parses a single-number cron field.
+func cronSingle(field string) (int, bool) {
+	v, err := strconv.Atoi(field)
+	if err != nil || v < 0 || v > 59 {
+		return 0, false
+	}
+	return v, true
+}
+
+// cronNumbers expands a cron field ("*", "n", "a,b,c", "a-b",
+// "a-b/s", "*/s") into its values within [lo,hi]. 7 in a weekday
+// field is Sunday, same as 0.
+func cronNumbers(field string, lo, hi int) []int {
+	seen := map[int]bool{}
+	var out []int
+	add := func(v int) {
+		if v == hi+1 && lo == 0 && hi == 6 {
+			v = 0 // weekday "7" is Sunday
+		}
+		if v >= lo && v <= hi && !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	for _, part := range strings.Split(field, ",") {
+		part = strings.TrimSpace(part)
+		step := 1
+		if i := strings.Index(part, "/"); i >= 0 {
+			if s, err := strconv.Atoi(part[i+1:]); err == nil && s > 0 {
+				step = s
+			}
+			part = part[:i]
+		}
+		a, b := lo, hi
+		switch {
+		case part == "*" || part == "":
+			// full range
+		case strings.Contains(part, "-"):
+			bounds := strings.SplitN(part, "-", 2)
+			v1, e1 := strconv.Atoi(bounds[0])
+			v2, e2 := strconv.Atoi(bounds[1])
+			if e1 != nil || e2 != nil {
+				continue
+			}
+			a, b = v1, v2
+		default:
+			v, err := strconv.Atoi(part)
+			if err != nil {
+				continue
+			}
+			add(v)
+			continue
+		}
+		for v := a; v <= b; v += step {
+			add(v)
+		}
+	}
+	return out
+}
+
+// nextTimeOfDay returns how long until the entry next fires: the
+// first allowed weekday whose HH:MM:SS is still ahead of `now`,
+// searching up to a week out.
+func nextTimeOfDay(now time.Time, e timeEntry) time.Duration {
+	for i := 0; i < 8; i++ {
+		day := now.AddDate(0, 0, i)
+		if len(e.days) > 0 && !e.days[int(day.Weekday())] {
+			continue
+		}
+		cand := time.Date(day.Year(), day.Month(), day.Day(), e.hour, e.min, e.sec, 0, now.Location())
+		if cand.After(now) {
+			return cand.Sub(now)
+		}
+	}
+	// No allowed weekday inside the next week — retry tomorrow.
+	return 24 * time.Hour
+}
+
+// Stop halts the interval ticker and every scheduled timer
+// (idempotent)
 func (n *InjectNode) Stop() error {
-	n.stopOnce.Do(func() { close(n.stopCh) })
+	n.stopOnce.Do(func() {
+		close(n.stopCh)
+		s := n.schedule()
+		s.mu.Lock()
+		s.stopped = true
+		for _, t := range s.timers {
+			t.Stop()
+		}
+		s.timers = nil
+		s.mu.Unlock()
+	})
 	return nil
 }
