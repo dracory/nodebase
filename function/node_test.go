@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/dracory/nodebase"
@@ -19,6 +20,7 @@ import (
 // fakeHost implements nodebase.NodeHost: state slot, memory context
 // store, env map and emitted-message capture.
 type fakeHost struct {
+	mu         sync.Mutex
 	states     map[string]interface{}
 	emitted    []nodestore.MessageInterface
 	events     []string
@@ -67,6 +69,8 @@ func (h *fakeHost) RunningFlow(wf string) (nodestore.WorkflowInterface, bool) {
 }
 func (h *fakeHost) RunContext(wf string) context.Context { return context.Background() }
 func (h *fakeHost) GetOrCreateNodeState(wf, nodeID string, f func() interface{}) interface{} {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	key := wf + "/" + nodeID
 	if s, ok := h.states[key]; ok {
 		return s
@@ -76,7 +80,17 @@ func (h *fakeHost) GetOrCreateNodeState(wf, nodeID string, f func() interface{})
 	return s
 }
 func (h *fakeHost) ExecuteDownstream(ctx context.Context, wf, from string, w nodestore.WorkflowInterface, p nodestore.MessageInterface, ports []string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	h.downstream = append(h.downstream, downstreamCall{from: from, p: p, ports: ports})
+}
+
+// downstreamCalls returns a snapshot of the recorded downstream sends —
+// the drain goroutine appends while tests read.
+func (h *fakeHost) downstreamCalls() []downstreamCall {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]downstreamCall(nil), h.downstream...)
 }
 func (h *fakeHost) NodeEnv(wf, nodeID, name string) (interface{}, bool) {
 	v, ok := h.env[name]

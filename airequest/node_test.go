@@ -59,6 +59,8 @@ func (h *fakeHost) LookupNode(wf, nodeID string) (nodestore.NodeInterface, bool)
 func (h *fakeHost) RunningFlow(wf string) (nodestore.WorkflowInterface, bool) { return nil, false }
 func (h *fakeHost) RunContext(wf string) context.Context                      { return context.Background() }
 func (h *fakeHost) GetOrCreateNodeState(wf, nodeID string, f func() interface{}) interface{} {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	key := wf + "/" + nodeID
 	if s, ok := h.states[key]; ok {
 		return s

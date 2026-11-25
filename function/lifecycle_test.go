@@ -18,11 +18,11 @@ import (
 func waitDownstream(t *testing.T, host *fakeHost, n int) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
-	for len(host.downstream) < n && time.Now().Before(deadline) {
+	for len(host.downstreamCalls()) < n && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if len(host.downstream) < n {
-		t.Fatalf("expected %d downstream sends, got %d", n, len(host.downstream))
+	if len(host.downstreamCalls()) < n {
+		t.Fatalf("expected %d downstream sends, got %d", n, len(host.downstreamCalls()))
 	}
 }
 
@@ -63,17 +63,17 @@ func TestFunctionSetTimeoutSend(t *testing.T) {
 		t.Fatalf("script returned a value, expected drop; got %v", out.GetPayload())
 	}
 	deadline := time.Now().Add(2 * time.Second)
-	for len(host.downstream) == 0 && time.Now().Before(deadline) {
+	for len(host.downstreamCalls()) == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if len(host.downstream) != 1 {
-		t.Fatalf("expected 1 downstream send, got %d", len(host.downstream))
+	if len(host.downstreamCalls()) != 1 {
+		t.Fatalf("expected 1 downstream send, got %d", len(host.downstreamCalls()))
 	}
-	if host.downstream[0].p.GetPayload() != "hi" {
-		t.Fatalf("async send payload wrong: %v", host.downstream[0].p.GetPayload())
+	if host.downstreamCalls()[0].p.GetPayload() != "hi" {
+		t.Fatalf("async send payload wrong: %v", host.downstreamCalls()[0].p.GetPayload())
 	}
-	if len(host.downstream[0].ports) != 1 || host.downstream[0].ports[0] != "output_1" {
-		t.Fatalf("async send ports wrong: %v", host.downstream[0].ports)
+	if len(host.downstreamCalls()[0].ports) != 1 || host.downstreamCalls()[0].ports[0] != "output_1" {
+		t.Fatalf("async send ports wrong: %v", host.downstreamCalls()[0].ports)
 	}
 }
 
@@ -86,8 +86,8 @@ func TestFunctionClearTimeout(t *testing.T) {
 		t.Fatalf("execute failed: %v", err)
 	}
 	time.Sleep(200 * time.Millisecond)
-	if len(host.downstream) != 0 {
-		t.Fatalf("cleared timer still fired: %v", host.downstream)
+	if len(host.downstreamCalls()) != 0 {
+		t.Fatalf("cleared timer still fired: %v", host.downstreamCalls())
 	}
 }
 
@@ -109,8 +109,8 @@ func TestFunctionLifecycleScripts(t *testing.T) {
 		t.Fatalf("execute: %v", err)
 	}
 	waitDownstream(t, host, 1)
-	if fmt.Sprintf("%v", host.downstream[0].p.GetPayload()) != "1" {
-		t.Fatalf("expected counter 1 from initialize, got %v", host.downstream[0].p.GetPayload())
+	if fmt.Sprintf("%v", host.downstreamCalls()[0].p.GetPayload()) != "1" {
+		t.Fatalf("expected counter 1 from initialize, got %v", host.downstreamCalls()[0].p.GetPayload())
 	}
 	if err := n.Stop(); err != nil {
 		t.Fatalf("stop: %v", err)
@@ -148,8 +148,8 @@ return promise;`
 		t.Fatalf("execute: %v", err)
 	}
 	waitDownstream(t, host, 1)
-	if host.downstream[0].p.GetPayload() != "Hello, World!" {
-		t.Fatalf("expected 'Hello, World!' after async setup, got %v", host.downstream[0].p.GetPayload())
+	if host.downstreamCalls()[0].p.GetPayload() != "Hello, World!" {
+		t.Fatalf("expected 'Hello, World!' after async setup, got %v", host.downstreamCalls()[0].p.GetPayload())
 	}
 }
 
@@ -171,7 +171,7 @@ func TestFunctionStopCancelsTimers(t *testing.T) {
 		t.Fatalf("stop: %v", err)
 	}
 	time.Sleep(200 * time.Millisecond)
-	if len(host.downstream) != 0 {
-		t.Fatalf("timer fired after stop: %v", host.downstream)
+	if len(host.downstreamCalls()) != 0 {
+		t.Fatalf("timer fired after stop: %v", host.downstreamCalls())
 	}
 }

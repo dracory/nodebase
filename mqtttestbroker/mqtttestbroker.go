@@ -66,7 +66,8 @@ type Broker struct {
 	clients map[net.Conn]*client
 	closed  bool
 	// Published records every publish the broker saw, in order —
-	// handy for assertions on what the client side sent.
+	// handy for assertions on what the client side sent. Guarded by
+	// mu — read it through PublishedMessages().
 	Published []PublishedMessage
 	// tlsPEM holds the CA PEM when the broker runs TLS — tests write
 	// it to a file to exercise the pem-path config of the nodes.
@@ -528,4 +529,12 @@ func RawConnect(addr, clientID string, will *Will) (net.Conn, error) {
 	}
 	_ = conn.SetReadDeadline(time.Time{})
 	return conn, nil
+}
+
+// PublishedMessages returns a copy of the recorded publishes — the
+// broker's serve goroutines append while tests read.
+func (b *Broker) PublishedMessages() []PublishedMessage {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]PublishedMessage(nil), b.Published...)
 }

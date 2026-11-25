@@ -256,16 +256,16 @@ func TestMQTTOutMsgPropsFallbackLive(t *testing.T) {
 	publish(map[string]interface{}{"qos": 0, "retain": false})
 
 	deadline := time.Now().Add(5 * time.Second)
-	for len(broker.Published) < 2 && time.Now().Before(deadline) {
+	for len(broker.PublishedMessages()) < 2 && time.Now().Before(deadline) {
 		time.Sleep(15 * time.Millisecond)
 	}
-	if len(broker.Published) < 2 {
-		t.Fatalf("broker saw %d publishes, want 2", len(broker.Published))
+	if len(broker.PublishedMessages()) < 2 {
+		t.Fatalf("broker saw %d publishes, want 2", len(broker.PublishedMessages()))
 	}
-	if got := broker.Published[0]; got.QoS != 1 || !got.Retain {
+	if got := broker.PublishedMessages()[0]; got.QoS != 1 || !got.Retain {
 		t.Fatalf("msg-driven flags not honored: %+v", got)
 	}
-	if got := broker.Published[1]; got.QoS != 0 || got.Retain {
+	if got := broker.PublishedMessages()[1]; got.QoS != 0 || got.Retain {
 		t.Fatalf("msg-driven flags not honored: %+v", got)
 	}
 
@@ -273,13 +273,13 @@ func TestMQTTOutMsgPropsFallbackLive(t *testing.T) {
 	one, tr := 1, true
 	cfg.QoS, cfg.Retain = &one, &tr
 	publish(map[string]interface{}{"qos": 0, "retain": false})
-	for len(broker.Published) < 3 && time.Now().Before(deadline) {
+	for len(broker.PublishedMessages()) < 3 && time.Now().Before(deadline) {
 		time.Sleep(15 * time.Millisecond)
 	}
-	if len(broker.Published) < 3 {
-		t.Fatalf("broker saw %d publishes, want 3", len(broker.Published))
+	if len(broker.PublishedMessages()) < 3 {
+		t.Fatalf("broker saw %d publishes, want 3", len(broker.PublishedMessages()))
 	}
-	if got := broker.Published[2]; got.QoS != 1 || !got.Retain {
+	if got := broker.PublishedMessages()[2]; got.QoS != 1 || !got.Retain {
 		t.Fatalf("configured flags must win over msg metadata: %+v", got)
 	}
 }
