@@ -73,9 +73,9 @@ var schema = map[string]interface{}{
 				"buffer: raw bytes",
 		},
 		"out": map[string]interface{}{
-			"type":    "string",
-			"title":   "Close",
-			"enum":    []string{"time", "char", "count", "sit", "immed"},
+			"type":  "string",
+			"title": "Close",
+			"enum":  []string{"time", "char", "count", "sit", "immed"},
 			"description": "Node-RED reply selector: time = after a " +
 				"timeout of Splitc ms; char = after the Splitc character; " +
 				"count = after Splitc characters; sit = never close " +
@@ -88,9 +88,9 @@ var schema = map[string]interface{}{
 			"showIf":      map[string]interface{}{"out": []string{"time", "char", "count"}},
 		},
 		"mode": map[string]interface{}{
-			"type":    "string",
-			"title":   "Reply Framing (legacy)",
-			"enum":    []string{"timeout", "delimiter", "length"},
+			"type":  "string",
+			"title": "Reply Framing (legacy)",
+			"enum":  []string{"timeout", "delimiter", "length"},
 			"description": "Legacy framing selector (timeout|delimiter|length); " +
 				"ignored when Close (out) is set",
 		},

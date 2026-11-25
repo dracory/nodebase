@@ -141,9 +141,9 @@ func (c *TCPOutConfig) mode() string {
 // in host state.
 type tcpOutState struct {
 	mu       sync.Mutex
-	conn     net.Conn            // client-mode persistent connection
-	listener net.Listener        // server-mode listener
-	conns    map[net.Conn]bool   // server-mode accepted sockets
+	conn     net.Conn          // client-mode persistent connection
+	listener net.Listener      // server-mode listener
+	conns    map[net.Conn]bool // server-mode accepted sockets
 }
 
 // TCPOutNode writes the message Data over TCP — replying on the

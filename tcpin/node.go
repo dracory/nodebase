@@ -58,9 +58,9 @@ var schema = map[string]interface{}{
 				"client: dial out to host:port (Node-RED 'server' field)",
 		},
 		"mode": map[string]interface{}{
-			"type":    "string",
-			"title":   "Mode",
-			"enum":    []string{"listen", "connect"},
+			"type":  "string",
+			"title": "Mode",
+			"enum":  []string{"listen", "connect"},
 			"description": "Legacy alias of Type (listen=server, " +
 				"connect=client); ignored when Type is set",
 		},
@@ -395,7 +395,7 @@ func (n *TCPInNode) frameStream(conn net.Conn, emit func([]byte)) error {
 		buf = append(buf, tmp[:nr]...)
 		if delim == "" {
 			if nr > 0 {
-				emit(buf[:nr])
+				emit(append([]byte(nil), buf[:nr]...))
 			}
 			buf = buf[:0]
 		} else {
