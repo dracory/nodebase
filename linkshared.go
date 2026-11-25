@@ -23,7 +23,7 @@ const DefaultLinkCallFunctionTimeout = 5 * time.Second
 // implementing Node-RED's linkcallTargets.getTargetNode: a direct node
 // id wins (static choice); otherwise, when dynamic is true, the target
 // is treated as a linkIn NAME — unique within the caller's flow first,
-// then globally across non-subflow linkIns; zero or many matches fail.
+// then globally across non-component linkIns; zero or many matches fail.
 //
 // Since this engine folds every Node-RED tab into one workflow, the
 // flow-scoped and global lookups are the same scan.

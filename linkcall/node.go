@@ -52,7 +52,7 @@ func init() {
 		Descriptor: nodebase.NodeDescriptor{
 			Type:        "linkCall",
 			Name:        "Link Call",
-			Description: "Calls a Link In subflow and awaits its Link Out return",
+			Description: "Calls a Link In component and awaits its Link Out return",
 			Icon:        "link",
 			Category:    "Flow Control",
 			Set:         "core",

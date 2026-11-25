@@ -157,10 +157,10 @@ func CollectUIWidgets(workflow nodestore.WorkflowInterface) []UIWidgetManifest {
 // honor the same semantics the engine applies.
 //
 // A node is disabled when its own "d"/"disabled" data flag is set
-// (Node-RED parity), when its module (data.module — an id under the
+// (Node-RED parity), when its child flow (data.childFlow — an id under the
 // id-keyed model, a name in legacy documents) is listed in
-// workflow.GetView()["disabledModules"] or flagged enabled:false in
-// workflow.GetView()["modules"], or when a view group containing it
+// workflow.GetView()["disabledFlows"] or flagged enabled:false in
+// workflow.GetView()["childFlows"], or when a view group containing it
 // (workflow.GetView()["groups"] entry with disabled:true) is
 // disabled. noderunner's deploy-time predicate delegates here so the
 // semantics stay single-sourced in the nodebase.
@@ -171,18 +171,18 @@ func WorkflowNodeDisabled(workflow nodestore.WorkflowInterface, node nodestore.N
 	if workflow == nil || workflow.GetView() == nil {
 		return false
 	}
-	if mod := StringOf(node.GetData()["module"]); mod != "" {
-		// data.module and view.disabledModules hold module ids under
+	if mod := StringOf(node.GetData()["childFlow"]); mod != "" {
+		// data.childFlow and view.disabledFlows hold child flow ids under
 		// the id-keyed model; legacy documents hold names. Both forms
-		// resolve through view.modules.
-		for _, m := range uiArrayOf(workflow.GetView()["disabledModules"]) {
-			if uiModuleRefMatches(workflow, m, mod) {
+		// resolve through view.childFlows.
+		for _, m := range uiArrayOf(workflow.GetView()["disabledFlows"]) {
+			if uiFlowRefMatches(workflow, m, mod) {
 				return true
 			}
 		}
-		// A module entity flagged enabled:false disables every node
+		// A child flow entity flagged enabled:false disables every node
 		// on it (same state as a disabledModules listing).
-		if uiModuleEntityDisabled(workflow, mod) {
+		if uiFlowEntityDisabled(workflow, mod) {
 			return true
 		}
 	}
@@ -223,14 +223,14 @@ func uiTruthyFlag(v any) bool {
 	return false
 }
 
-// uiModuleLabel resolves a module reference (id or label) to its
-// label per view.modules, so a name-keyed disabledModules entry
-// matches a node carrying the module id and vice versa.
-func uiModuleLabel(w nodestore.WorkflowInterface, ref string) string {
+// uiFlowLabel resolves a child flow reference (id or label) to its
+// label per view.childFlows, so a name-keyed disabledModules entry
+// matches a node carrying the child flow id and vice versa.
+func uiFlowLabel(w nodestore.WorkflowInterface, ref string) string {
 	if w == nil || w.GetView() == nil || ref == "" {
 		return ref
 	}
-	for _, m := range uiArrayOf(w.GetView()["modules"]) {
+	for _, m := range uiArrayOf(w.GetView()["childFlows"]) {
 		mm, ok := m.(map[string]any)
 		if !ok {
 			continue
@@ -244,21 +244,21 @@ func uiModuleLabel(w nodestore.WorkflowInterface, ref string) string {
 	return ref
 }
 
-func uiModuleRefMatches(w nodestore.WorkflowInterface, a, b any) bool {
+func uiFlowRefMatches(w nodestore.WorkflowInterface, a, b any) bool {
 	ra, rb := StringOf(a), StringOf(b)
 	if ra == "" || rb == "" {
 		return false
 	}
-	return ra == rb || uiModuleLabel(w, ra) == uiModuleLabel(w, rb)
+	return ra == rb || uiFlowLabel(w, ra) == uiFlowLabel(w, rb)
 }
 
-// uiModuleEntityDisabled reports whether the view.modules entity
+// uiFlowEntityDisabled reports whether the view.childFlows entity
 // matching ref (by id or label) is flagged enabled:false.
-func uiModuleEntityDisabled(w nodestore.WorkflowInterface, ref string) bool {
+func uiFlowEntityDisabled(w nodestore.WorkflowInterface, ref string) bool {
 	if w == nil || w.GetView() == nil || ref == "" {
 		return false
 	}
-	for _, m := range uiArrayOf(w.GetView()["modules"]) {
+	for _, m := range uiArrayOf(w.GetView()["childFlows"]) {
 		mm, ok := m.(map[string]interface{})
 		if !ok {
 			continue

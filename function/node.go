@@ -795,7 +795,7 @@ func (n *FunctionNode) injectGlobals(vm *goja.Runtime, input nodestore.MessageIn
 	}
 
 	// env.get resolves the Node-RED env scoping chain — group env →
-	// subflow overlay → flow env → global-config → process env (see
+	// component overlay → flow env → global-config → process env (see
 	// host.NodeEnv for the first four; os.Getenv is the last). The
 	// OS fallback fails CLOSED: only a host that explicitly
 	// implements OSEnvAllowed() and returns true exposes process

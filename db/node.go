@@ -329,7 +329,7 @@ func (n *DBNode) StopKey() string {
 }
 
 // resolveDSN resolves the configured dsn, honouring the "env:NAME"
-// reference form via the scoped env chain (group → subflow → flow →
+// reference form via the scoped env chain (group → component → flow →
 // global-config → OS environment).
 func (n *DBNode) resolveDSN() (string, error) {
 	dsn := strings.TrimSpace(n.config.DSN)

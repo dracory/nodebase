@@ -71,7 +71,7 @@ type NodeHost interface {
 	ExecuteDownstream(ctx context.Context, workflowID, fromNodeID string, workflow nodestore.WorkflowInterface, payload nodestore.MessageInterface, ports []string)
 
 	// NodeEnv resolves an environment variable in node scope
-	// (Node-RED env.get: group/subflow/flow layers, then global env,
+	// (Node-RED env.get: group/component/flow layers, then global env,
 	// then the OS environment).
 	NodeEnv(workflowID, nodeID, name string) (interface{}, bool)
 
