@@ -33,6 +33,40 @@ func TestChangeSet(t *testing.T) {
 	}
 }
 
+// ValueType honors Node-RED's tot: the typedInput value type decides
+// how the literal is interpreted (str/num/bool/json/msg).
+func TestChangeSetValueTypes(t *testing.T) {
+	msg := run(t, &ChangeConfig{Rules: []ChangeRule{
+		{Op: "set", Field: "n", Value: "abc", ValueType: "num"},
+		{Op: "set", Field: "f", Value: "1.5", ValueType: "num"},
+		{Op: "set", Field: "b", Value: "true", ValueType: "bool"},
+		{Op: "set", Field: "arr", Value: "[1,2]", ValueType: "json"},
+		{Op: "set", Field: "s", Value: "12", ValueType: "str"},
+		{Op: "set", Field: "copy", Value: "n", ValueType: "msg"},
+	}}, nodestore.NewMessage())
+	m := msg.GetPayload().(map[string]interface{})
+	if m["n"] != "abc" {
+		t.Fatalf("num non-numeric should stay a string: %v", m["n"])
+	}
+	if m["f"] != 1.5 {
+		t.Fatalf("num should parse to float: %v", m["f"])
+	}
+	if m["b"] != true {
+		t.Fatalf("bool should parse: %v", m["b"])
+	}
+	if a, ok := m["arr"].([]interface{}); !ok || len(a) != 2 {
+		t.Fatalf("json should parse to array: %v", m["arr"])
+	}
+	// str keeps the literal verbatim — no JSON coercion.
+	if m["s"] != "12" {
+		t.Fatalf("str should stay a string: %v", m["s"])
+	}
+	// msg type copies from another message property.
+	if m["copy"] != "abc" {
+		t.Fatalf("msg copy should read the source path: %v", m["copy"])
+	}
+}
+
 func TestChangeSetNestedAndString(t *testing.T) {
 	msg := run(t, &ChangeConfig{Rules: []ChangeRule{
 		{Op: "set", Field: "user.name", Value: `"bob"`},

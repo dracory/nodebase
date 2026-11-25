@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
-	"strconv"
 	"strings"
 
 	nodestore "github.com/dracory/nodestore"
@@ -34,21 +33,23 @@ func EvalSwitchRule(rule SwitchRule, payload nodestore.MessageInterface) bool {
 		}
 	}
 
+	expected := rule.expectedValue(payload)
+
 	switch rule.Op {
 	case "eq":
-		return found && switchEqual(value, rule.Value)
+		return found && switchEqual(value, expected)
 	case "neq":
-		return !found || !switchEqual(value, rule.Value)
+		return !found || !switchEqual(value, expected)
 	case "gt":
-		return found && switchCompare(value, rule.Value) > 0
+		return found && switchCompare(value, expected) > 0
 	case "lt":
-		return found && switchCompare(value, rule.Value) < 0
+		return found && switchCompare(value, expected) < 0
 	case "lte":
-		return found && switchCompare(value, rule.Value) <= 0
+		return found && switchCompare(value, expected) <= 0
 	case "gte":
-		return found && switchCompare(value, rule.Value) >= 0
+		return found && switchCompare(value, expected) >= 0
 	case "contains":
-		return found && switchContains(value, rule.Value)
+		return found && switchContains(value, expected)
 	case "empty":
 		return !found || isEmptyValue(value)
 	case "regex":
@@ -101,23 +102,33 @@ func switchType(value interface{}, found bool, expected string) bool {
 	return false
 }
 
-// switchEqual compares a payload value with a rule string. When both
-// sides parse as floats they compare numerically; otherwise they compare
-// as strings.
-func switchEqual(value interface{}, expected string) bool {
+// switchEqual compares a payload value with a rule value. When both
+// sides parse as floats they compare numerically; otherwise they
+// compare their string forms.
+func switchEqual(value, expected interface{}) bool {
+	// Booleans compare strictly — Node-RED's typedInput bool must not
+	// match the string "true"/"false".
+	if be, ok := expected.(bool); ok {
+		bv, ok2 := value.(bool)
+		return ok2 && bv == be
+	}
+	if bv, ok := value.(bool); ok {
+		be, ok2 := expected.(bool)
+		return ok2 && bv == be
+	}
 	if fv, err1 := ToFloat(value); err1 == nil {
-		if fe, err2 := strconv.ParseFloat(expected, 64); err2 == nil {
+		if fe, err2 := ToFloat(expected); err2 == nil {
 			return fv == fe
 		}
 	}
-	return fmt.Sprintf("%v", value) == expected
+	return fmt.Sprintf("%v", value) == fmt.Sprintf("%v", expected)
 }
 
 // switchCompare returns -1/0/1 comparing value against expected.
 // Numeric compare when both parse as floats, else string compare.
-func switchCompare(value interface{}, expected string) int {
+func switchCompare(value, expected interface{}) int {
 	if fv, err1 := ToFloat(value); err1 == nil {
-		if fe, err2 := strconv.ParseFloat(expected, 64); err2 == nil {
+		if fe, err2 := ToFloat(expected); err2 == nil {
 			switch {
 			case fv > fe:
 				return 1
@@ -128,10 +139,11 @@ func switchCompare(value interface{}, expected string) int {
 		}
 	}
 	s := fmt.Sprintf("%v", value)
+	e := fmt.Sprintf("%v", expected)
 	switch {
-	case s > expected:
+	case s > e:
 		return 1
-	case s < expected:
+	case s < e:
 		return -1
 	}
 	return 0
@@ -139,10 +151,10 @@ func switchCompare(value interface{}, expected string) int {
 
 // switchContains checks substring membership for strings and element
 // membership for arrays.
-func switchContains(value interface{}, expected string) bool {
+func switchContains(value, expected interface{}) bool {
 	switch v := value.(type) {
 	case string:
-		return strings.Contains(v, expected)
+		return strings.Contains(v, fmt.Sprintf("%v", expected))
 	case []interface{}:
 		for _, item := range v {
 			if switchEqual(item, expected) {
@@ -173,8 +185,59 @@ func isEmptyValue(value interface{}) bool {
 // SwitchRule is a single ordered rule evaluated against the incoming
 // payload. Property is a dotted path into msg.Payload (e.g. "path" or
 // "body.user.role"). Rule index i maps to output port "output_{i+1}".
+// ValueType is Node-RED's vt: how Value is interpreted — "str"
+// (default), "num", "bool", "json" or "msg" (a message property path).
 type SwitchRule struct {
-	Property string `json:"property"`
-	Op       string `json:"op"` // eq | neq | gt | lt | lte | gte | contains | empty | regex | istype
-	Value    string `json:"value"`
+	Property  string `json:"property"`
+	Op        string `json:"op"` // eq | neq | gt | lt | lte | gte | contains | empty | regex | istype
+	Value     string `json:"value"`
+	ValueType string `json:"valueType,omitempty"`
+}
+
+// expectedValue resolves the rule's comparison value per ValueType —
+// Node-RED's typedInput semantics (v interpreted as vt).
+func (r SwitchRule) expectedValue(payload nodestore.MessageInterface) interface{} {
+	switch r.ValueType {
+	case "num":
+		if f, ok := ParseNumericString(r.Value); ok {
+			return f
+		}
+		return r.Value
+	case "bool":
+		return r.Value == "true" || r.Value == "1"
+	case "json":
+		var v interface{}
+		if err := json.Unmarshal([]byte(r.Value), &v); err == nil {
+			return v
+		}
+		return r.Value
+	case "msg":
+		// The comparison value is itself read from the message —
+		// "payload"/"payload.x" resolve into Data like Property,
+		// anything else hits metadata first, then the payload map.
+		if payload == nil {
+			return nil
+		}
+		path := r.Value
+		if path == "payload" {
+			return payload.GetPayload()
+		}
+		if rest, ok := strings.CutPrefix(path, "payload."); ok {
+			if m, ok := payload.GetPayload().(map[string]interface{}); ok {
+				v, _ := GetPath(m, rest)
+				return v
+			}
+			return nil
+		}
+		if v, ok := GetPath(payload.GetMetadata(), path); ok {
+			return v
+		}
+		if m, ok := payload.GetPayload().(map[string]interface{}); ok {
+			v, _ := GetPath(m, path)
+			return v
+		}
+		return nil
+	default: // "", "str", "jsonata" (until the JSONata seam lands)
+		return r.Value
+	}
 }

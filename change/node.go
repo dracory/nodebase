@@ -4,6 +4,7 @@ package change
 import (
 	"context"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -68,7 +69,7 @@ func translateNRRules(n nodestore.NodeInterface, c *ChangeConfig) error {
 			case "msg":
 				translated = append(translated, ChangeRule{Op: "set", Field: field, FromField: to})
 			case "", "str", "num", "json", "bool", "bin":
-				translated = append(translated, ChangeRule{Op: "set", Field: field, Value: to})
+				translated = append(translated, ChangeRule{Op: "set", Field: field, Value: to, ValueType: tot})
 			default:
 				return fmt.Errorf("change: rule %d uses Node-RED value type %q — not supported", i, tot)
 			}
@@ -145,10 +146,14 @@ var schema = map[string]interface{}{
 						"enum": []string{"set", "delete", "move"},
 					},
 					"field": map[string]string{
-						"type": "string",
+						"type":  "string",
+						"title": "Field",
 					},
-					"value": map[string]string{
-						"type": "string",
+					"value": map[string]interface{}{
+						"type":      "string",
+						"title":     "Value",
+						"format":    "typedinput",
+						"typeField": "valueType",
 					},
 				},
 			},
@@ -165,6 +170,10 @@ type ChangeRule struct {
 	Op    string `json:"op"` // set | delete | move
 	Field string `json:"field"`
 	Value string `json:"value"`
+	// ValueType is Node-RED's tot: how Value is interpreted for "set"
+	// — "str" (default), "num", "bool", "json", or "msg" (read the
+	// value from a message property path, same as FromField).
+	ValueType string `json:"valueType,omitempty"`
 	// FromField, when set, takes the value from a message path
 	// (msg.topic, payload.user, …) instead of the literal Value —
 	// Node-RED's set-with-tot:"msg".
@@ -222,18 +231,42 @@ func (n *ChangeNode) Execute(ctx context.Context, input nodestore.MessageInterfa
 // The value is stored as parsed JSON when it parses, else as a string.
 func (n *ChangeNode) applySet(input nodestore.MessageInterface, rule ChangeRule) {
 	var value interface{}
-	if rule.FromField != "" {
+	src := rule.FromField
+	if src == "" && rule.ValueType == "msg" {
+		src = rule.Value // typedInput "msg": Value is the source path
+	}
+	if src != "" {
 		// Copy semantics (Node-RED tot:"msg"): read another message
 		// property — metadata first, then inside the payload map.
-		if path, ok := nodebase.MsgPath(rule.FromField); ok {
+		if path, ok := nodebase.MsgPath(src); ok {
 			value, _ = nodebase.GetPath(input.GetMetadata(), path)
-		} else if rule.FromField == "payload" {
+		} else if src == "payload" {
 			value = input.GetPayload()
 		} else if m, ok := input.GetPayload().(map[string]interface{}); ok {
-			value, _ = nodebase.GetPath(m, rule.FromField)
+			value, _ = nodebase.GetPath(m, src)
 		}
 	} else {
-		value = nodebase.ParseJSONOrString(rule.Value)
+		switch rule.ValueType {
+		case "num":
+			if f, ok := nodebase.ParseNumericString(rule.Value); ok {
+				value = f
+			} else {
+				value = rule.Value
+			}
+		case "bool":
+			value = rule.Value == "true" || rule.Value == "1"
+		case "json":
+			var v interface{}
+			if err := json.Unmarshal([]byte(rule.Value), &v); err == nil {
+				value = v
+			} else {
+				value = rule.Value
+			}
+		case "str":
+			value = rule.Value // explicit string: no JSON coercion
+		default: // "" legacy — parse-if-JSON for backward compatibility
+			value = nodebase.ParseJSONOrString(rule.Value)
+		}
 	}
 
 	if rule.Field == "" || rule.Field == "payload" {

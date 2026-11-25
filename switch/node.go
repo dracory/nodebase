@@ -125,14 +125,18 @@ var schema = map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"property": map[string]string{
-						"type": "string",
+						"type":  "string",
+						"title": "Property",
 					},
 					"op": map[string]interface{}{
 						"type": "string",
 						"enum": []string{"eq", "neq", "gt", "lt", "lte", "gte", "contains", "empty", "regex", "istype"},
 					},
-					"value": map[string]string{
-						"type": "string",
+					"value": map[string]interface{}{
+						"type":      "string",
+						"title":     "Value",
+						"format":    "typedinput",
+						"typeField": "valueType",
 					},
 				},
 			},

@@ -83,6 +83,27 @@ var schema = map[string]interface{}{
 			"default":     "s",
 			"description": "Time unit for the repeat interval",
 		},
+		"props": map[string]interface{}{
+			"type":        "array",
+			"title":       "Properties",
+			"description": "Node-RED-style message properties to inject — each {p, v, vt}. \"payload\" sets msg.Payload, \"topic\" the topic, other names land in message metadata.",
+			"items": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"p": map[string]string{
+						"type":  "string",
+						"title": "Property",
+					},
+					"v": map[string]interface{}{
+						"type":            "string",
+						"title":           "Value",
+						"format":          "typedinput",
+						"typeField":       "vt",
+						"typedInputTypes": []string{"str", "num", "bool", "json", "env", "msg", "date"},
+					},
+				},
+			},
+		},
 	},
 }
 
