@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/dracory/nodebase"
 	nodestore "github.com/dracory/nodestore"
+	"strings"
 	"sync"
 	"time"
 )
@@ -128,7 +129,37 @@ type TriggerConfig struct {
 	// Outputs selects where op2 goes: 1 = output_1, 2 = output_2.
 	Outputs int `json:"outputs"`
 	// ByTopic keeps a separate timer per Metadata["topic"].
-	ByTopic bool `json:"bytopic"`
+	ByTopic TopicScope `json:"bytopic"`
+}
+
+// TopicScope decodes Node-RED's bytopic representations into a bool:
+// exported flows carry the enum strings "topic" (per-topic timers) and
+// "all" (one shared timer), while the editor schema writes booleans.
+// true means per-topic.
+type TopicScope bool
+
+// UnmarshalJSON accepts the enum strings, booleans and boolean strings.
+func (s *TopicScope) UnmarshalJSON(raw []byte) error {
+	var v interface{}
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return err
+	}
+	switch x := v.(type) {
+	case bool:
+		*s = TopicScope(x)
+	case string:
+		switch strings.ToLower(strings.TrimSpace(x)) {
+		case "topic", "true", "1":
+			*s = true
+		default:
+			*s = false
+		}
+	case float64:
+		*s = x != 0
+	default:
+		*s = false
+	}
+	return nil
 }
 
 // triggerState holds the node's pending timers, keyed by topic. It lives

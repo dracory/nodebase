@@ -38,7 +38,7 @@ func TestTriggerNodeConfigDecode(t *testing.T) {
 	}
 	if trg.config.Op1 != "1" || trg.config.Op1Type != "num" || trg.config.Op2 != "0" ||
 		trg.config.Duration != 2.0 || trg.config.Units != "s" || !trg.config.Extend ||
-		!trg.config.OverrideDelay || trg.config.Outputs != 1 || !trg.config.ByTopic {
+		!trg.config.OverrideDelay || trg.config.Outputs != 1 || trg.config.ByTopic != TopicScope(true) {
 		t.Fatalf("config decoded incorrectly: %+v", trg.config)
 	}
 }
