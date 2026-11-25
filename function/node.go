@@ -9,6 +9,7 @@ import (
 	"github.com/dracory/nodebase"
 	nodestore "github.com/dracory/nodestore"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -221,9 +222,40 @@ func (n *FunctionNode) Execute(ctx context.Context, input nodestore.MessageInter
 		return nil, fmt.Errorf("function node.error: %s", n.nodeErr)
 	}
 
-	// A non-null return value counts as an implicit send on output_1.
-	if result := vm.Get("__result"); result != nil && !goja.IsUndefined(result) && !goja.IsNull(result) {
-		n.handleSend(result.Export())
+	// __result is the async wrapper's promise. Fulfilled synchronously
+	// for ordinary scripts; a rejected promise is a script error; a
+	// still-pending one means the script awaits a value no host API
+	// can settle (e.g. a user-built promise) — nothing was sent, so the
+	// message drops exactly like a script that never returns.
+	if result := vm.Get("__result"); result != nil {
+		if promise, ok := result.Export().(*goja.Promise); ok {
+			switch promise.State() {
+			case goja.PromiseStateFulfilled:
+				if v := promise.Result(); v != nil && !goja.IsUndefined(v) && !goja.IsNull(v) {
+					n.handleSend(v.Export())
+				}
+			case goja.PromiseStateRejected:
+				reason := promise.Result()
+				errText := reason.String()
+				// The promise rejection is not a thrown goja exception,
+				// so the position suffix ("at function:5:20(38)") the
+				// RunProgram error path carries is not attached — pull
+				// the first frame off the error's JS stack instead.
+				if obj, ok := reason.(*goja.Object); ok {
+					if stack := obj.Get("stack"); stack != nil && !goja.IsUndefined(stack) {
+						lines := strings.SplitN(stack.String(), "\n", 3)
+						if len(lines) > 1 {
+							if frame := strings.TrimSpace(lines[1]); strings.HasPrefix(frame, "at ") {
+								errText += " " + frame
+							}
+						}
+					}
+				}
+				return nil, fmt.Errorf("function script error: %s", errText)
+			}
+		} else if !goja.IsUndefined(result) && !goja.IsNull(result) {
+			n.handleSend(result.Export())
+		}
 	}
 
 	return n.dispatch()
@@ -409,6 +441,19 @@ func (n *FunctionNode) injectGlobals(vm *goja.Runtime, input nodestore.MessageIn
 			}
 			return goja.Undefined()
 		},
+		// node.linkcall(target, msg, options) — Node-RED's function-side
+		// link call: resolves a linkIn by id or unique name, injects a
+		// (cloned) message and resolves with the linkOut return. Runs
+		// synchronously in goja, so `await` settles inside the script
+		// run. options.timeout is milliseconds (NR default 5000);
+		// options.clone defaults to true.
+		"linkcall": func(call goja.FunctionCall) goja.Value {
+			v, err := n.linkCall(vm, call.Arguments)
+			if err != nil {
+				panic(vm.NewGoError(err))
+			}
+			return v
+		},
 	}
 	if err := vm.Set("node", nodeObj); err != nil {
 		return err
@@ -458,6 +503,73 @@ func (n *FunctionNode) injectGlobals(vm *goja.Runtime, input nodestore.MessageIn
 	}
 
 	return vm.Set("__result", goja.Undefined())
+}
+
+// linkCall implements node.linkcall(target, msg, options): the target
+// is a linkIn node id or — when no node has that id — a unique linkIn
+// name (Node-RED's static-vs-dynamic rule). The script's msg is cloned
+// by default (options.clone === false opts out), injected, and the
+// linkOut return is handed back as a JS message object. Errors
+// (missing target, timeout) reject like Node-RED's node.linkcall.
+func (n *FunctionNode) linkCall(vm *goja.Runtime, args []goja.Value) (goja.Value, error) {
+	if len(args) < 1 {
+		return nil, fmt.Errorf("linkcall target must be a non-empty string")
+	}
+	target := args[0].String()
+	if target == "" || goja.IsUndefined(args[0]) || goja.IsNull(args[0]) {
+		return nil, fmt.Errorf("linkcall target must be a non-empty string")
+	}
+	var argMsg nodestore.MessageInterface
+	if len(args) > 1 && args[1] != nil && !goja.IsUndefined(args[1]) && !goja.IsNull(args[1]) {
+		exported := args[1].Export()
+		if _, ok := exported.(map[string]interface{}); !ok {
+			return nil, fmt.Errorf("linkcall msg must be an object")
+		}
+		argMsg = msgToPayload(exported, n.inputID)
+	}
+	if argMsg == nil {
+		return nil, fmt.Errorf("linkcall msg must be an object")
+	}
+
+	timeout := nodebase.DefaultLinkCallFunctionTimeout
+	clone := true
+	if len(args) > 2 && args[2] != nil && !goja.IsUndefined(args[2]) && !goja.IsNull(args[2]) {
+		if opts, ok := args[2].Export().(map[string]interface{}); ok {
+			if t, ok := opts["timeout"]; ok {
+				if f, err := nodebase.ToFloat(t); err == nil && f > 0 {
+					timeout = time.Duration(f * float64(time.Millisecond))
+				}
+			}
+			if c, ok := opts["clone"]; ok {
+				if b, ok := c.(bool); ok {
+					clone = b
+				}
+			}
+		}
+	}
+
+	// A target that is not a live node id is a dynamic (name) lookup —
+	// Node-RED resolves the name uniquely within the caller's flow.
+	targetID, err := nodebase.ResolveLinkInTarget(n.host, n.workflowID, target, true)
+	if err != nil {
+		return nil, err
+	}
+	msg := argMsg
+	if clone {
+		msg = nodebase.ClonePayload(argMsg)
+	}
+	response, err := nodebase.LinkCallInto(n.host, n.workflowID, n.GetID(), targetID, msg, timeout)
+	if err != nil {
+		return nil, err
+	}
+
+	out := map[string]interface{}{}
+	for k, v := range response.GetMetadata() {
+		out[k] = v
+	}
+	out["payload"] = response.GetPayload()
+	out["_msgid"] = response.GetID()
+	return vm.ToValue(out), nil
 }
 
 // contextObject builds the JS API object for one context scope:
@@ -547,7 +659,12 @@ func (s *functionState) program(source string) (*goja.Program, error) {
 	if s.progOk {
 		return s.prog, nil
 	}
-	wrapped := "var __result = (function (msg, node, context, flow, global, env) {\n" +
+	// Node-RED wraps the body in an async function — top-level await
+	// (e.g. `await node.linkcall(...)`) is legal there. goja resolves
+	// promises whose awaited values are plain results inline, so
+	// synchronous scripts still complete inside RunProgram and only
+	// the promise-unboxing below changes.
+	wrapped := "var __result = (async function (msg, node, context, flow, global, env) {\n" +
 		source + "\n})(msg, node, context, flow, global, env);"
 	prog, err := goja.Compile("function", wrapped, false)
 	if err != nil {

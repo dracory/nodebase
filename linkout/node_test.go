@@ -95,15 +95,20 @@ func TestLinkOutTargetChecks(t *testing.T) {
 	host := newHost()
 	host.nodes["notlink"] = nodestore.NewNode("x", "debug")
 
-	// unknown target
-	n := newNode(&LinkOutConfig{Links: []string{"ghost"}}, host)
-	if _, err := n.Execute(context.Background(), nodestore.NewMessage()); err == nil {
-		t.Fatal("unknown target should fail")
+	// Node-RED parity: dangling or non-linkIn targets are silently
+	// skipped (no event listener), never an error — the message still
+	// passes through on the node's own output.
+	n := newNode(&LinkOutConfig{Links: []string{"ghost"}, Mode: "link"}, host)
+	out, err := n.Execute(context.Background(), nodestore.NewMessage())
+	if err != nil {
+		t.Fatalf("unknown target should be skipped, not fail: %v", err)
 	}
-	// wrong node type
-	n2 := newNode(&LinkOutConfig{Links: []string{"notlink"}}, host)
-	if _, err := n2.Execute(context.Background(), nodestore.NewMessage()); err == nil {
-		t.Fatal("non-linkIn target should fail")
+	if out == nil {
+		t.Fatal("link mode should still pass the message through")
+	}
+	n2 := newNode(&LinkOutConfig{Links: []string{"notlink"}, Mode: "link"}, host)
+	if _, err := n2.Execute(context.Background(), nodestore.NewMessage()); err != nil {
+		t.Fatalf("non-linkIn target should be skipped, not fail: %v", err)
 	}
 }
 

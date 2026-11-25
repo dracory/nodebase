@@ -113,12 +113,14 @@ func NewLinkCallNode(node nodestore.NodeInterface, config *LinkCallConfig, host 
 	}
 }
 
-// Execute resolves the target linkIn, pushes this node onto the link
-// call stack, injects the message and waits for the linkOut return.
+// Execute resolves the target linkIn — by id in static mode, by id or
+// unique linkIn name in dynamic mode (Node-RED's linkcallTargets
+// semantics) — injects the message and waits for the linkOut return.
 // The returned payload becomes this node's output.
 func (n *LinkCallNode) Execute(ctx context.Context, input nodestore.MessageInterface) (nodestore.MessageInterface, error) {
 	target := n.config.Link
-	if n.config.LinkType == "dynamic" {
+	dynamic := n.config.LinkType == "dynamic"
+	if dynamic {
 		if v, ok := input.GetMetadata()["target"].(string); ok && v != "" {
 			target = v
 		}
@@ -126,47 +128,16 @@ func (n *LinkCallNode) Execute(ctx context.Context, input nodestore.MessageInter
 	if target == "" {
 		return nil, fmt.Errorf("linkCall: no link target configured")
 	}
-	node, ok := n.host.LookupNode(n.workflowID, target)
-	if !ok {
-		return nil, fmt.Errorf("linkCall: link target %q not found in workflow", target)
-	}
-	if node.GetType() != "linkIn" {
-		return nil, fmt.Errorf("linkCall: target %q is a %q node, not linkIn", target, node.GetType())
-	}
-
-	// Push this call onto the message's link call stack. The entry's
-	// msgId is intentionally left empty — writing it here (after
-	// InjectMessage returns) would race the injected traversal, which
-	// clones the metadata on a separate goroutine. linkOut's
-	// execReturn falls back to the injected message's stamped "msgId"
-	// metadata key, which is the same pending correlation id.
-	if input.GetMetadata() == nil {
-		input.SetMetadata(map[string]interface{}{})
-	}
-	stack, _ := input.GetMetadata()[nodebase.LinkCallStackKey].([]interface{})
-	entry := map[string]interface{}{"nodeId": n.GetID()}
-	input.GetMetadata()[nodebase.LinkCallStackKey] = append(stack, entry)
-
-	msgID, ch, err := n.host.InjectMessage(n.workflowID, target, input)
+	targetID, err := nodebase.ResolveLinkInTarget(n.host, n.workflowID, target, dynamic)
 	if err != nil {
-		return nil, fmt.Errorf("linkCall: cannot reach link %q: %w", target, err)
+		return nil, err
 	}
 
 	timeout := nodebase.DefaultLinkCallTimeout
 	if n.config.Timeout > 0 {
 		timeout = time.Duration(float64(n.config.Timeout) * float64(time.Second))
 	}
-
-	select {
-	case response := <-ch:
-		return response, nil
-	case <-time.After(timeout):
-		n.host.DiscardPending(msgID)
-		return nil, fmt.Errorf("linkCall: no response from link %q within %v — is a linkOut(return) wired downstream?", target, timeout)
-	case <-ctx.Done():
-		n.host.DiscardPending(msgID)
-		return nil, ctx.Err()
-	}
+	return nodebase.LinkCallInto(n.host, n.workflowID, n.GetID(), targetID, input, timeout)
 }
 
 // LinkCallNode injects the message into a target linkIn and awaits the

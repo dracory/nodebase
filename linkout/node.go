@@ -97,8 +97,12 @@ func (n *LinkOutNode) Execute(ctx context.Context, input nodestore.MessageInterf
 	}
 
 	for _, target := range n.config.Links {
+		// Node-RED pushes to linkIn nodes through the event bus: a
+		// configured target that does not exist (dangling link) or is
+		// not a linkIn simply has no listener — it is skipped, never
+		// an error.
 		if err := n.checkLinkInTarget(target); err != nil {
-			return nil, err
+			continue
 		}
 		push := nodebase.ClonePayload(input)
 		if push.GetMetadata() == nil {
