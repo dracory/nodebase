@@ -6,6 +6,7 @@ package tcpout
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -147,9 +148,10 @@ func TestTCPOutReply(t *testing.T) {
 
 func TestTCPOutReplyErrors(t *testing.T) {
 	n := newNode(&TCPOutConfig{Reply: true}, &fakeHost{})
-	// no metadata
-	if _, err := n.Execute(context.Background(), nodestore.NewMessage().SetPayload("x")); err == nil {
-		t.Fatal("missing session metadata should fail")
+	// No session metadata broadcasts to every pooled connection
+	// (Node-RED connectionPool semantics) — an empty pool is fine.
+	if _, err := n.Execute(context.Background(), nodestore.NewMessage().SetPayload("x")); err != nil {
+		t.Fatalf("broadcast to empty pool should pass: %v", err)
 	}
 	// unknown session
 	in := nodestore.NewMessage().SetPayload("x").SetMetadata(map[string]interface{}{
@@ -157,6 +159,154 @@ func TestTCPOutReplyErrors(t *testing.T) {
 	})
 	if _, err := n.Execute(context.Background(), in); err == nil {
 		t.Fatal("unknown session should fail")
+	}
+}
+
+func TestTCPOutReplyBroadcast(t *testing.T) {
+	// Two pooled sessions, no message metadata — the reply writes to
+	// every pooled connection (Node-RED connectionPool semantics).
+	c1a, c1b := net.Pipe()
+	defer c1a.Close()
+	defer c1b.Close()
+	c2a, c2b := net.Pipe()
+	defer c2a.Close()
+	defer c2b.Close()
+	got := make(chan []byte, 2)
+	read := func(c net.Conn) {
+		b := make([]byte, 64)
+		nr, _ := c.Read(b)
+		got <- b[:nr]
+	}
+	go read(c1a)
+	go read(c2a)
+
+	host := &fakeHost{}
+	sessions := host.GetOrCreateNodeState("wf", nodebase.TCPSessionsKey, func() interface{} {
+		return nodebase.NewTCPSessions()
+	}).(*nodebase.TCPSessions)
+	sessions.Put("10.0.0.1:5000", c1b)
+	sessions.Put("10.0.0.2:5000", c2b)
+
+	n := newNode(&TCPOutConfig{Beserver: "reply"}, host)
+	if _, err := n.Execute(context.Background(), nodestore.NewMessage().SetPayload("all")); err != nil {
+		t.Fatalf("broadcast failed: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case b := <-got:
+			if string(b) != "all" {
+				t.Fatalf("broadcast bytes wrong: %q", b)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("missing broadcast write")
+		}
+	}
+}
+
+func TestTCPOutClientPersistent(t *testing.T) {
+	// client mode (Node-RED beserver:"client") keeps one connection
+	// across messages; end:true closes it after each write.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen failed: %v", err)
+	}
+	defer ln.Close()
+	conns := make(chan net.Conn, 4)
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			conns <- conn
+		}
+	}()
+
+	port := ln.Addr().(*net.TCPAddr).Port
+	host := &fakeHost{}
+	n := newNode(&TCPOutConfig{Beserver: "client", Host: "127.0.0.1", Port: port}, host)
+	defer n.Stop()
+	read := func(t *testing.T, conn net.Conn, want string) {
+		t.Helper()
+		_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		b := make([]byte, 64)
+		nr, err := conn.Read(b)
+		if err != nil || string(b[:nr]) != want {
+			t.Fatalf("want %q, got %q err=%v", want, b[:nr], err)
+		}
+	}
+
+	// First message dials; second message reuses the same socket.
+	if _, err := n.Execute(context.Background(), nodestore.NewMessage().SetPayload("one")); err != nil {
+		t.Fatalf("write 1: %v", err)
+	}
+	conn := <-conns
+	defer conn.Close()
+	read(t, conn, "one")
+	if _, err := n.Execute(context.Background(), nodestore.NewMessage().SetPayload("two")); err != nil {
+		t.Fatalf("write 2: %v", err)
+	}
+	read(t, conn, "two")
+
+	// end:true closes after the write; the next message re-dials.
+	n2 := newNode(&TCPOutConfig{Beserver: "client", Host: "127.0.0.1", Port: port, End: true}, host)
+	defer n2.Stop()
+	if _, err := n2.Execute(context.Background(), nodestore.NewMessage().SetPayload("bye")); err != nil {
+		t.Fatalf("end write: %v", err)
+	}
+	conn2 := <-conns
+	defer conn2.Close()
+	read(t, conn2, "bye")
+	_ = conn2.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, err := conn2.Read(make([]byte, 1)); err == nil {
+		t.Fatal("end:true should close the connection after the write")
+	}
+	if _, err := n2.Execute(context.Background(), nodestore.NewMessage().SetPayload("again")); err != nil {
+		t.Fatalf("redial write: %v", err)
+	}
+	conn3 := <-conns
+	defer conn3.Close()
+	read(t, conn3, "again")
+}
+
+func TestTCPOutServerBroadcast(t *testing.T) {
+	// server mode (Node-RED beserver:"server") listens and writes
+	// each message to every connected socket.
+	host := &fakeHost{}
+	n := newNode(&TCPOutConfig{Beserver: "server", Port: 0}, host)
+	// Port 0 won't pass Validate; pick a real free port.
+	probe, _ := net.Listen("tcp", "127.0.0.1:0")
+	port := probe.Addr().(*net.TCPAddr).Port
+	probe.Close()
+	n.config.Port = port
+	defer n.Stop()
+	if err := n.Activate(context.Background()); err != nil {
+		t.Fatalf("activate failed: %v", err)
+	}
+
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatalf("client dial: %v", err)
+	}
+	defer conn.Close()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		n.state.mu.Lock()
+		count := len(n.state.conns)
+		n.state.mu.Unlock()
+		if count == 1 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+	if _, err := n.Execute(context.Background(), nodestore.NewMessage().SetPayload("bcast")); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	b := make([]byte, 64)
+	nr, err := conn.Read(b)
+	if err != nil || string(b[:nr]) != "bcast" {
+		t.Fatalf("broadcast wrong: %q err=%v", b[:nr], err)
 	}
 }
 

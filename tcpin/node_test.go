@@ -176,6 +176,182 @@ func TestTCPInConnectFailure(t *testing.T) {
 	}
 }
 
+// listenAndDial starts a datamode-configured tcpIn on a free port and
+// returns the client side of a loopback connection.
+func listenAndDial(t *testing.T, cfg *TCPInConfig, host *fakeHost) (*TCPInNode, net.Conn) {
+	t.Helper()
+	probe, _ := net.Listen("tcp", "127.0.0.1:0")
+	port := probe.Addr().(*net.TCPAddr).Port
+	probe.Close()
+	cfg.Server = "server"
+	cfg.Port = port
+	n := newNode(cfg, host)
+	if _, err := n.Execute(context.Background(), nodestore.NewMessage()); err != nil {
+		n.Stop()
+		t.Fatalf("activate failed: %v", err)
+	}
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		n.Stop()
+		t.Fatalf("dial failed: %v", err)
+	}
+	return n, conn
+}
+
+func TestTCPInSingleMode(t *testing.T) {
+	// datamode "single": the whole buffer emits once at close.
+	host := &fakeHost{}
+	nl := ""
+	n, conn := listenAndDial(t, &TCPInConfig{Datamode: "single", Datatype: "utf8", Newline: &nl}, host)
+	defer n.Stop()
+	conn.Write([]byte("chunk one "))
+	conn.Write([]byte("chunk two"))
+	conn.Close()
+
+	waitFor(t, func() bool { return len(host.emittedMsgs()) >= 1 }, "single-mode emission")
+	emitted := host.emittedMsgs()
+	if len(emitted) != 1 {
+		t.Fatalf("single mode should emit once, got %d", len(emitted))
+	}
+	if emitted[0].GetPayload() != "chunk one chunk two" {
+		t.Fatalf("payload wrong: %v", emitted[0].GetPayload())
+	}
+}
+
+func TestTCPInStreamChunks(t *testing.T) {
+	// buffer datatype emits each received chunk as raw bytes.
+	host := &fakeHost{}
+	n, conn := listenAndDial(t, &TCPInConfig{Datamode: "stream", Datatype: "buffer"}, host)
+	defer n.Stop()
+	conn.Write([]byte{1, 2, 3})
+	time.Sleep(50 * time.Millisecond)
+	conn.Write([]byte{4, 5})
+	conn.Close()
+
+	waitFor(t, func() bool { return len(host.emittedMsgs()) >= 2 }, "stream chunk emission")
+	emitted := host.emittedMsgs()
+	if b, ok := emitted[0].GetPayload().([]byte); !ok || len(b) != 3 || b[0] != 1 {
+		t.Fatalf("chunk 1 wrong: %#v", emitted[0].GetPayload())
+	}
+	if b, ok := emitted[1].GetPayload().([]byte); !ok || len(b) != 2 || b[0] != 4 {
+		t.Fatalf("chunk 2 wrong: %#v", emitted[1].GetPayload())
+	}
+}
+
+func TestTCPInDelimiterChar(t *testing.T) {
+	// utf8 stream with a custom delimiter character (Node-RED newline).
+	host := &fakeHost{}
+	nl := "|"
+	n, conn := listenAndDial(t, &TCPInConfig{Datamode: "stream", Datatype: "utf8", Newline: &nl}, host)
+	defer n.Stop()
+	conn.Write([]byte("aa|bb|cc"))
+	conn.Close()
+
+	waitFor(t, func() bool { return len(host.emittedMsgs()) >= 2 }, "delimited emission")
+	emitted := host.emittedMsgs()
+	if emitted[0].GetPayload() != "aa" || emitted[1].GetPayload() != "bb" {
+		t.Fatalf("parts wrong: %v / %v", emitted[0].GetPayload(), emitted[1].GetPayload())
+	}
+	// The unterminated remainder flushes at close (Node-RED 'end').
+	waitFor(t, func() bool { return len(host.emittedMsgs()) >= 3 }, "remainder flush")
+	if host.emittedMsgs()[2].GetPayload() != "cc" {
+		t.Fatalf("remainder wrong: %v", host.emittedMsgs()[2].GetPayload())
+	}
+}
+
+func TestTCPInTrimReattach(t *testing.T) {
+	// trim re-attaches the delimiter to each emitted part.
+	host := &fakeHost{}
+	nl := "|"
+	n, conn := listenAndDial(t, &TCPInConfig{Datamode: "stream", Datatype: "utf8", Newline: &nl, Trim: true}, host)
+	defer n.Stop()
+	conn.Write([]byte("aa|bb|"))
+	conn.Close()
+
+	waitFor(t, func() bool { return len(host.emittedMsgs()) >= 2 }, "trim emission")
+	emitted := host.emittedMsgs()
+	if emitted[0].GetPayload() != "aa|" || emitted[1].GetPayload() != "bb|" {
+		t.Fatalf("parts wrong: %v / %v", emitted[0].GetPayload(), emitted[1].GetPayload())
+	}
+}
+
+func TestTCPInLengthMode(t *testing.T) {
+	// datamode "length": emit every N bytes; remainder at close.
+	host := &fakeHost{}
+	n, conn := listenAndDial(t, &TCPInConfig{Datamode: "length", Datatype: "utf8", Length: 4}, host)
+	defer n.Stop()
+	conn.Write([]byte("aaaabbbbcc"))
+	conn.Close()
+
+	waitFor(t, func() bool { return len(host.emittedMsgs()) >= 3 }, "length-mode emission")
+	emitted := host.emittedMsgs()
+	if emitted[0].GetPayload() != "aaaa" || emitted[1].GetPayload() != "bbbb" || emitted[2].GetPayload() != "cc" {
+		t.Fatalf("chunks wrong: %v / %v / %v", emitted[0].GetPayload(), emitted[1].GetPayload(), emitted[2].GetPayload())
+	}
+}
+
+func TestTCPInTimeoutMode(t *testing.T) {
+	// datamode "timeout": buffered data flushes after FlushMS idle.
+	host := &fakeHost{}
+	n, conn := listenAndDial(t, &TCPInConfig{Datamode: "timeout", Datatype: "utf8", FlushMS: 80}, host)
+	defer n.Stop()
+	conn.Write([]byte("first burst"))
+	waitFor(t, func() bool { return len(host.emittedMsgs()) >= 1 }, "timeout flush")
+	if host.emittedMsgs()[0].GetPayload() != "first burst" {
+		t.Fatalf("flush wrong: %v", host.emittedMsgs()[0].GetPayload())
+	}
+	conn.Write([]byte("second"))
+	waitFor(t, func() bool { return len(host.emittedMsgs()) >= 2 }, "second timeout flush")
+	if host.emittedMsgs()[1].GetPayload() != "second" {
+		t.Fatalf("second flush wrong: %v", host.emittedMsgs()[1].GetPayload())
+	}
+	conn.Close()
+}
+
+func TestTCPInBase64Datatype(t *testing.T) {
+	host := &fakeHost{}
+	n, conn := listenAndDial(t, &TCPInConfig{Datamode: "stream", Datatype: "base64"}, host)
+	defer n.Stop()
+	conn.Write([]byte("hi"))
+	conn.Close()
+
+	waitFor(t, func() bool { return len(host.emittedMsgs()) >= 1 }, "base64 emission")
+	if host.emittedMsgs()[0].GetPayload() != "aGk=" {
+		t.Fatalf("base64 wrong: %v", host.emittedMsgs()[0].GetPayload())
+	}
+}
+
+func TestTCPInServerField(t *testing.T) {
+	// Node-RED "server":"client" selects connect mode (overrides mode).
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen failed: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		conn.Write([]byte("hello\n"))
+		time.Sleep(50 * time.Millisecond)
+	}()
+
+	host := &fakeHost{}
+	port := ln.Addr().(*net.TCPAddr).Port
+	n := newNode(&TCPInConfig{Server: "client", Mode: "listen", Host: "127.0.0.1", Port: port}, host)
+	defer n.Stop()
+	out, err := n.Execute(context.Background(), nodestore.NewMessage())
+	if err != nil {
+		t.Fatalf("connect failed: %v", err)
+	}
+	if out.GetPayload().(map[string]interface{})["status"] != "connected" {
+		t.Fatalf("server:client should connect: %v", out.GetPayload())
+	}
+	waitFor(t, func() bool { return len(host.emittedMsgs()) >= 1 }, "connect emission")
+}
+
 func TestTCPInValidate(t *testing.T) {
 	host := &fakeHost{}
 	if err := newNode(&TCPInConfig{Mode: "listen", Port: 5000}, host).Validate(); err != nil {

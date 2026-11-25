@@ -46,6 +46,17 @@ func (s *TCPSessions) DeleteIf(key string, conn net.Conn) {
 	s.mu.Unlock()
 }
 
+// Each calls fn for every registered connection — tcpOut reply mode
+// broadcasts to all pooled sessions when the message carries no
+// ip/port metadata (Node-RED connectionPool semantics).
+func (s *TCPSessions) Each(fn func(key string, conn net.Conn)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for key, conn := range s.conns {
+		fn(key, conn)
+	}
+}
+
 // CloseAll closes and removes every registered connection.
 func (s *TCPSessions) CloseAll() {
 	s.mu.Lock()

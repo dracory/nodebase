@@ -77,6 +77,62 @@ func TestUDPOutNoPort(t *testing.T) {
 	}
 }
 
+func TestUDPOutAddrField(t *testing.T) {
+	// Node-RED "addr" is the canonical target field; host is the alias.
+	conn, port := listen(t)
+	n := newNode(&UDPOutConfig{Addr: "127.0.0.1", Port: port})
+	if _, err := n.Execute(context.Background(), nodestore.NewMessage().SetPayload("via-addr")); err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if got := read(t, conn); string(got) != "via-addr" {
+		t.Fatalf("datagram wrong: %q", got)
+	}
+}
+
+func TestUDPOutBase64(t *testing.T) {
+	conn, port := listen(t)
+	n := newNode(&UDPOutConfig{Addr: "127.0.0.1", Port: port, Base64: true})
+	// "aGk=" decodes to "hi"
+	if _, err := n.Execute(context.Background(), nodestore.NewMessage().SetPayload("aGk=")); err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if got := read(t, conn); string(got) != "hi" {
+		t.Fatalf("base64 datagram wrong: %q", got)
+	}
+}
+
+func TestUDPOutBroadcast(t *testing.T) {
+	// multicast "broad" defaults the address to the broadcast one;
+	// sending must not error (receipt is platform-dependent).
+	n := newNode(&UDPOutConfig{Multicast: "broad", Port: 9})
+	if _, err := n.Execute(context.Background(), nodestore.NewMessage().SetPayload("bcast")); err != nil {
+		t.Fatalf("broadcast send failed: %v", err)
+	}
+}
+
+func TestUDPOutNodeREDDecode(t *testing.T) {
+	n := nodestore.NewNode("u1", "udpOut").SetWorkflowID("wf").SetData(map[string]interface{}{
+		"addr": "localhost", "port": "5353", "ipv": "udp4",
+		"outport": "", "base64": false, "multicast": "broad",
+	})
+	cfg := new(UDPOutConfig)
+	if err := nodebase.DecodeConfig(n, cfg); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if cfg.Addr != "localhost" || cfg.Port != 5353 || cfg.Multicast != "broad" {
+		t.Fatalf("decoded wrong: %+v", cfg)
+	}
+}
+
+func TestUDPOutValidate(t *testing.T) {
+	if err := newNode(&UDPOutConfig{Multicast: "bogus"}).Validate(); err == nil {
+		t.Fatal("bad multicast should fail")
+	}
+	if err := newNode(&UDPOutConfig{Multicast: "broad"}).Validate(); err != nil {
+		t.Fatalf("broad rejected: %v", err)
+	}
+}
+
 func TestUDPOutEmptyPayload(t *testing.T) {
 	n := newNode(&UDPOutConfig{Port: 1})
 	if _, err := n.Execute(context.Background(), nodestore.NewMessage()); err == nil {

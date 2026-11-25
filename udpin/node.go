@@ -4,6 +4,7 @@ package udpin
 import (
 	"context"
 	_ "embed"
+	"encoding/base64"
 	"fmt"
 	"github.com/dracory/nodebase"
 	nodestore "github.com/dracory/nodestore"
@@ -44,10 +45,44 @@ func init() {
 var schema = map[string]interface{}{
 	"type": "object",
 	"properties": map[string]interface{}{
+		"multicast": map[string]interface{}{
+			"type":    "string",
+			"title":   "Listen For",
+			"enum":    []string{"false", "true"},
+			"default": "false",
+			"description": "false: plain UDP datagrams; " +
+				"true: multicast datagrams for Group",
+		},
+		"group": map[string]interface{}{
+			"type":        "string",
+			"title":       "Group",
+			"description": "Multicast group to join (e.g. 225.0.18.83)",
+			"showIf":      map[string]interface{}{"multicast": "true"},
+		},
+		"iface": map[string]interface{}{
+			"type":        "string",
+			"title":       "Interface",
+			"description": "Optional local interface name for the multicast join",
+			"showIf":      map[string]interface{}{"multicast": "true"},
+		},
 		"port": map[string]interface{}{
 			"type":        "integer",
 			"title":       "Port",
 			"description": "UDP port to listen on",
+		},
+		"ipv": map[string]interface{}{
+			"type":    "string",
+			"title":   "Using",
+			"enum":    []string{"udp4", "udp6"},
+			"default": "udp4",
+		},
+		"datatype": map[string]interface{}{
+			"type":    "string",
+			"title":   "Output",
+			"enum":    []string{"utf8", "buffer", "base64"},
+			"default": "utf8",
+			"description": "utf8: string payload; buffer: raw bytes; " +
+				"base64: base64-encoded string",
 		},
 	},
 	"required": []string{"port"},
@@ -57,6 +92,19 @@ var schema = map[string]interface{}{
 type UDPInConfig struct {
 	// Port is the UDP port to listen on.
 	Port int `json:"port"`
+	// Multicast joins Group when "true" (a Node-RED enum-as-string
+	// field — imports serialize it as "true"/"false").
+	Multicast string `json:"multicast"`
+	// Group is the multicast group address to join.
+	Group string `json:"group"`
+	// Iface names the local interface for the multicast join.
+	Iface string `json:"iface"`
+	// IPv selects the socket family: "udp4" (default) | "udp6".
+	IPv string `json:"ipv"`
+	// Datatype selects the payload type: "utf8" (string — default,
+	// matching the previous always-string behavior), "buffer"
+	// (raw []byte) or "base64" (base64-encoded string).
+	Datatype string `json:"datatype"`
 }
 
 // UDPInNode receives UDP datagrams. Each datagram is emitted
@@ -70,15 +118,52 @@ type UDPInNode struct {
 	stopOnce   sync.Once
 }
 
-// Execute binds the UDP socket and starts the datagram read loop.
+// Execute binds the UDP socket — or joins the multicast group when
+// configured — and starts the datagram read loop.
 func (n *UDPInNode) Execute(ctx context.Context, input nodestore.MessageInterface) (nodestore.MessageInterface, error) {
-	conn, err := net.ListenUDP("udp", &net.UDPAddr{Port: n.config.Port})
-	if err != nil {
-		return nil, fmt.Errorf("udpIn cannot listen on :%d: %w", n.config.Port, err)
+	network := n.config.IPv
+	if network == "" {
+		network = "udp4"
+	}
+	var conn *net.UDPConn
+	var err error
+	if n.config.Multicast == "true" {
+		group := net.ParseIP(n.config.Group)
+		if group == nil {
+			return nil, fmt.Errorf("udpIn invalid multicast group %q", n.config.Group)
+		}
+		var iface *net.Interface
+		if n.config.Iface != "" {
+			iface, err = net.InterfaceByName(n.config.Iface)
+			if err != nil {
+				return nil, fmt.Errorf("udpIn interface %q: %w", n.config.Iface, err)
+			}
+		}
+		conn, err = net.ListenMulticastUDP(network, iface, &net.UDPAddr{IP: group, Port: n.config.Port})
+		if err != nil {
+			return nil, fmt.Errorf("udpIn cannot join %s:%d: %w", n.config.Group, n.config.Port, err)
+		}
+	} else {
+		conn, err = net.ListenUDP(network, &net.UDPAddr{Port: n.config.Port})
+		if err != nil {
+			return nil, fmt.Errorf("udpIn cannot listen on :%d: %w", n.config.Port, err)
+		}
 	}
 	n.conn = conn
 	go n.readLoop()
 	return nodestore.NewMessage().SetPayload(map[string]interface{}{"status": "listening", "port": n.config.Port}).SetTimestamp(time.Now()), nil
+}
+
+// payload converts a datagram into the configured output type.
+func (n *UDPInNode) payload(b []byte) interface{} {
+	switch n.config.Datatype {
+	case "buffer":
+		return append([]byte(nil), b...)
+	case "base64":
+		return base64.StdEncoding.EncodeToString(b)
+	default: // "utf8" and "" — the legacy string payload
+		return string(b)
+	}
 }
 
 // readLoop emits each received datagram downstream until the socket
@@ -90,7 +175,7 @@ func (n *UDPInNode) readLoop() {
 		if err != nil {
 			return // socket closed (Stop)
 		}
-		payload := nodestore.NewMessage().SetPayload(string(buf[:nr])).SetMetadata(map[string]interface{}{
+		payload := nodestore.NewMessage().SetPayload(n.payload(buf[:nr])).SetMetadata(map[string]interface{}{
 			"ip":   addr.IP.String(),
 			"port": fmt.Sprintf("%d", addr.Port),
 		}).SetTimestamp(time.Now())
@@ -116,6 +201,25 @@ func (n *UDPInNode) Validate() error {
 	}
 	if n.config.Port <= 0 || n.config.Port > 65535 {
 		return fmt.Errorf("udpIn requires a valid port (1-65535)")
+	}
+	switch n.config.Multicast {
+	case "", "false":
+	case "true":
+		if net.ParseIP(n.config.Group) == nil {
+			return fmt.Errorf("udpIn multicast requires a valid group address")
+		}
+	default:
+		return fmt.Errorf("invalid udpIn multicast %q (false|true)", n.config.Multicast)
+	}
+	switch n.config.IPv {
+	case "", "udp4", "udp6":
+	default:
+		return fmt.Errorf("invalid udpIn ipv %q (udp4|udp6)", n.config.IPv)
+	}
+	switch n.config.Datatype {
+	case "", "utf8", "buffer", "base64":
+	default:
+		return fmt.Errorf("invalid udpIn datatype %q (utf8|buffer|base64)", n.config.Datatype)
 	}
 	return nil
 }

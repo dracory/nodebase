@@ -101,6 +101,81 @@ func TestUDPInReceives(t *testing.T) {
 	}
 }
 
+func TestUDPInDatatypeBuffer(t *testing.T) {
+	probe, _ := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	port := probe.LocalAddr().(*net.UDPAddr).Port
+	probe.Close()
+
+	host := &fakeHost{}
+	n := NewUDPInNode(nodestore.NewNode("u1", "udpIn").SetWorkflowID("wf"),
+		&UDPInConfig{Port: port, Datatype: "buffer"}, host)
+	defer n.Stop()
+	if _, err := n.Execute(context.Background(), nodestore.NewMessage()); err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	sender, _ := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: port})
+	defer sender.Close()
+	sender.Write([]byte{0xDE, 0xAD})
+
+	deadline := time.Now().Add(3 * time.Second)
+	for len(host.emittedMsgs()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(15 * time.Millisecond)
+	}
+	emitted := host.emittedMsgs()
+	if len(emitted) == 0 {
+		t.Fatal("no datagram emitted")
+	}
+	if b, ok := emitted[0].GetPayload().([]byte); !ok || len(b) != 2 || b[0] != 0xDE {
+		t.Fatalf("buffer payload wrong: %#v", emitted[0].GetPayload())
+	}
+}
+
+func TestUDPInMulticast(t *testing.T) {
+	// multicast "true" + group joins a multicast group (Node-RED fields).
+	probe, _ := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	port := probe.LocalAddr().(*net.UDPAddr).Port
+	probe.Close()
+
+	host := &fakeHost{}
+	n := NewUDPInNode(nodestore.NewNode("u1", "udpIn").SetWorkflowID("wf"),
+		&UDPInConfig{Port: port, Multicast: "true", Group: "224.0.0.251", Datatype: "utf8"}, host)
+	defer n.Stop()
+	if _, err := n.Execute(context.Background(), nodestore.NewMessage()); err != nil {
+		t.Skipf("multicast unavailable in this environment: %v", err)
+	}
+	sender, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP("224.0.0.251"), Port: port})
+	if err != nil {
+		t.Skipf("multicast send unavailable: %v", err)
+	}
+	defer sender.Close()
+	deadline := time.Now().Add(3 * time.Second)
+	for len(host.emittedMsgs()) == 0 && time.Now().Before(deadline) {
+		sender.Write([]byte("mcast"))
+		time.Sleep(100 * time.Millisecond)
+	}
+	emitted := host.emittedMsgs()
+	if len(emitted) == 0 {
+		t.Fatal("no multicast datagram emitted")
+	}
+	if emitted[0].GetPayload() != "mcast" {
+		t.Fatalf("payload wrong: %v", emitted[0].GetPayload())
+	}
+}
+
+func TestUDPInNodeREDDecode(t *testing.T) {
+	n := nodestore.NewNode("u1", "udpIn").SetWorkflowID("wf").SetData(map[string]interface{}{
+		"port": "5353", "ipv": "udp4", "multicast": "true",
+		"group": "224.0.0.251", "iface": "", "datatype": "utf8",
+	})
+	cfg := new(UDPInConfig)
+	if err := nodebase.DecodeConfig(n, cfg); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if cfg.Port != 5353 || cfg.Multicast != "true" || cfg.Group != "224.0.0.251" {
+		t.Fatalf("decoded wrong: %+v", cfg)
+	}
+}
+
 func TestUDPInValidate(t *testing.T) {
 	host := &fakeHost{}
 	if err := NewUDPInNode(nodestore.NewNode("u1", "udpIn"), &UDPInConfig{Port: 9999}, host).Validate(); err != nil {
@@ -108,5 +183,14 @@ func TestUDPInValidate(t *testing.T) {
 	}
 	if err := NewUDPInNode(nodestore.NewNode("u1", "udpIn"), &UDPInConfig{}, host).Validate(); err == nil {
 		t.Fatal("missing port should fail")
+	}
+	if err := NewUDPInNode(nodestore.NewNode("u1", "udpIn"), &UDPInConfig{Port: 1, Multicast: "true"}, host).Validate(); err == nil {
+		t.Fatal("multicast without group should fail")
+	}
+	if err := NewUDPInNode(nodestore.NewNode("u1", "udpIn"), &UDPInConfig{Port: 1, Multicast: "true", Group: "224.0.0.1"}, host).Validate(); err != nil {
+		t.Fatalf("valid multicast rejected: %v", err)
+	}
+	if err := NewUDPInNode(nodestore.NewNode("u1", "udpIn"), &UDPInConfig{Port: 1, Datatype: "bogus"}, host).Validate(); err == nil {
+		t.Fatal("bad datatype should fail")
 	}
 }

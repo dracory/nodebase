@@ -185,6 +185,104 @@ func TestTCPRequestKeepAlive(t *testing.T) {
 	}
 }
 
+func TestTCPRequestOutChar(t *testing.T) {
+	// Node-RED out:"char" + splitc — reply ends at the delimiter byte.
+	port := echoServer(t, func(conn net.Conn) {
+		defer conn.Close()
+		conn.Write([]byte("first\nsecond"))
+	})
+	n := newNode(&TCPRequestConfig{
+		Server: "127.0.0.1", Port: port, Out: "char", Splitc: `\n`, Ret: "string", Timeout: 2,
+	}, &fakeHost{})
+	out, err := n.Execute(context.Background(), nodestore.NewMessage().SetPayload("q"))
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if out.GetPayload() != "first\n" {
+		t.Fatalf("char reply wrong: %v", out.GetPayload())
+	}
+}
+
+func TestTCPRequestOutCount(t *testing.T) {
+	// Node-RED out:"count" + splitc — reply is exactly N bytes.
+	port := echoServer(t, func(conn net.Conn) {
+		defer conn.Close()
+		conn.Write([]byte("0123456789EXTRA"))
+	})
+	n := newNode(&TCPRequestConfig{
+		Server: "127.0.0.1", Port: port, Out: "count", Splitc: "5", Ret: "string", Timeout: 2,
+	}, &fakeHost{})
+	out, err := n.Execute(context.Background(), nodestore.NewMessage().SetPayload("q"))
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if out.GetPayload() != "01234" {
+		t.Fatalf("count reply wrong: %v", out.GetPayload())
+	}
+}
+
+func TestTCPRequestOutImmed(t *testing.T) {
+	// Node-RED out:"immed" — send and return without waiting.
+	replied := make(chan struct{}, 1)
+	port := echoServer(t, func(conn net.Conn) {
+		defer conn.Close()
+		buf := make([]byte, 64)
+		conn.Read(buf)
+		conn.Write([]byte("too late"))
+		replied <- struct{}{}
+	})
+	n := newNode(&TCPRequestConfig{
+		Server: "127.0.0.1", Port: port, Out: "immed", Timeout: 2,
+	}, &fakeHost{})
+	in := nodestore.NewMessage().SetPayload("q")
+	out, err := n.Execute(context.Background(), in)
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if out != in {
+		t.Fatal("immed should pass the message through")
+	}
+}
+
+func TestTCPRequestMsgPortOverride(t *testing.T) {
+	// Node-RED msg.port overrides the configured port.
+	port := echoServer(t, func(conn net.Conn) {
+		defer conn.Close()
+		conn.Write([]byte("via-msg"))
+	})
+	in := nodestore.NewMessage().SetPayload("q").SetMetadata(map[string]interface{}{
+		"host": "127.0.0.1", "port": fmt.Sprintf("%d", port),
+	})
+	// Config points at a dead port; metadata must win.
+	n := newNode(&TCPRequestConfig{Server: "127.0.0.1", Port: 1, Timeout: 2}, &fakeHost{})
+	out, err := n.Execute(context.Background(), in)
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if out.GetPayload() != "via-msg" {
+		t.Fatalf("reply wrong: %v", out.GetPayload())
+	}
+}
+
+func TestTCPRequestNodeREDDecode(t *testing.T) {
+	// A Node-RED-shaped config map decodes onto the NR field names.
+	n := nodestore.NewNode("r1", "tcpRequest").SetWorkflowID("wf").SetData(map[string]interface{}{
+		"server": "10.1.2.3", "port": "9999", "out": "char", "ret": "buffer",
+		"splitc": "\\n", "newline": "", "trim": false, "tls": "",
+	})
+	cfg := new(TCPRequestConfig)
+	if err := nodebase.DecodeConfig(n, cfg); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if cfg.Server != "10.1.2.3" || cfg.Port != 9999 || cfg.Out != "char" || cfg.Splitc != "\\n" {
+		t.Fatalf("decoded wrong: %+v", cfg)
+	}
+	r := cfg.resolve(nil)
+	if r.mode != "delimiter" || r.delimiter != "\n" || r.host != "10.1.2.3" {
+		t.Fatalf("resolve wrong: %+v", r)
+	}
+}
+
 func TestTCPRequestDialFailure(t *testing.T) {
 	ln, _ := net.Listen("tcp", "127.0.0.1:0")
 	port := ln.Addr().(*net.TCPAddr).Port

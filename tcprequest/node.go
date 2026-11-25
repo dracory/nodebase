@@ -12,6 +12,7 @@ import (
 	nodestore "github.com/dracory/nodestore"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"time"
 )
@@ -48,14 +49,20 @@ func init() {
 var schema = map[string]interface{}{
 	"type": "object",
 	"properties": map[string]interface{}{
+		"server": map[string]interface{}{
+			"type":        "string",
+			"title":       "Server",
+			"description": "Remote host to connect to (Node-RED field name; host is the legacy alias)",
+		},
 		"host": map[string]string{
 			"type":        "string",
 			"title":       "Host",
-			"description": "Remote host to connect to (default 127.0.0.1)",
+			"description": "Legacy alias of Server; ignored when Server is set",
 		},
 		"port": map[string]interface{}{
-			"type":  "integer",
-			"title": "Port",
+			"type":        "integer",
+			"title":       "Port",
+			"description": "Remote port; the message's port metadata overrides it",
 		},
 		"ret": map[string]interface{}{
 			"type":    "string",
@@ -65,14 +72,27 @@ var schema = map[string]interface{}{
 			"description": "string: reply payload as text; " +
 				"buffer: raw bytes",
 		},
+		"out": map[string]interface{}{
+			"type":    "string",
+			"title":   "Close",
+			"enum":    []string{"time", "char", "count", "sit", "immed"},
+			"description": "Node-RED reply selector: time = after a " +
+				"timeout of Splitc ms; char = after the Splitc character; " +
+				"count = after Splitc characters; sit = never close " +
+				"(stream replies); immed = immediately, don't wait",
+		},
+		"splitc": map[string]interface{}{
+			"type":        "string",
+			"title":       "Splitc",
+			"description": "Node-RED close parameter: milliseconds (time), delimiter character (char) or byte count (count)",
+			"showIf":      map[string]interface{}{"out": []string{"time", "char", "count"}},
+		},
 		"mode": map[string]interface{}{
 			"type":    "string",
-			"title":   "Reply Framing",
+			"title":   "Reply Framing (legacy)",
 			"enum":    []string{"timeout", "delimiter", "length"},
-			"default": "timeout",
-			"description": "timeout: take whatever arrives before Timeout; " +
-				"delimiter: read until the delimiter bytes appear; " +
-				"length: read exactly Length bytes",
+			"description": "Legacy framing selector (timeout|delimiter|length); " +
+				"ignored when Close (out) is set",
 		},
 		"timeout": map[string]interface{}{
 			"type":        "number",
@@ -91,6 +111,19 @@ var schema = map[string]interface{}{
 			"title":       "Length",
 			"description": "Fixed reply size for length mode",
 			"showIf":      map[string]interface{}{"mode": "length"},
+		},
+		"newline": map[string]interface{}{
+			"type":        "string",
+			"title":       "Reply Delimiter",
+			"description": "In sit mode with a string return, replies split on this delimiter (escape sequences like \\n allowed)",
+			"showIf":      map[string]interface{}{"out": "sit"},
+		},
+		"trim": map[string]interface{}{
+			"type":        "boolean",
+			"title":       "Re-attach Delimiter",
+			"description": "Keep the delimiter attached to each reply part in sit mode",
+			"default":     false,
+			"showIf":      map[string]interface{}{"out": "sit"},
 		},
 		"keep": map[string]interface{}{
 			"type":        "boolean",
@@ -114,25 +147,46 @@ var schema = map[string]interface{}{
 // Node-RED `tcp request` equivalent: a client session that connects to
 // a server, sends the payload and waits for the reply.
 type TCPRequestConfig struct {
-	// Host is the remote host (default 127.0.0.1).
+	// Server is the Node-RED host field ("" falls back to Host).
+	Server string `json:"server"`
+	// Host is the legacy host field (default 127.0.0.1).
 	Host string `json:"host"`
-	// Port is the remote port.
+	// Port is the remote port; message metadata "port" overrides it
+	// (Node-RED msg.port semantics).
 	Port int `json:"port"`
 	// Ret selects the reply payload type: "string" (default) | "buffer"
 	// (raw []byte). Node-RED field name: ret.
 	Ret string `json:"ret"`
+	// Out is the Node-RED close selector: "time" (reply after a
+	// timeout of Splitc ms), "char" (reply ends at the Splitc
+	// character), "count" (reply is exactly Splitc bytes), "sit"
+	// (stay connected — stream replies) or "immed" (send and
+	// close without waiting). "" falls back to the legacy Mode field.
+	Out string `json:"out"`
+	// Splitc is the Node-RED close parameter: milliseconds for
+	// "time", the delimiter character for "char", the byte count for
+	// "count". Serialized as a string by Node-RED.
+	Splitc string `json:"splitc"`
 	// Mode selects the reply framing: "timeout" (default — take
 	// whatever arrives before Timeout), "delimiter" (read until the
-	// delimiter bytes appear) or "length" (read exactly Length bytes).
+	// delimiter bytes appear), "length" (read exactly Length bytes),
+	// "sit" (stay connected, stream replies) or "immed" (don't wait
+	// for a reply). The Node-RED Out field wins when set.
 	Mode string `json:"mode"`
 	// Timeout bounds connect + reply wait, in seconds (default 10;
-	// 0 = 10).
+	// 0 = 10). Out "time" overrides it with Splitc milliseconds.
 	Timeout float64 `json:"timeout"`
 	// Delimiter terminates the reply in "delimiter" mode
 	// (escape sequences like \n allowed).
 	Delimiter string `json:"delimiter"`
 	// Length is the fixed reply size in "length" mode.
 	Length int `json:"length"`
+	// Newline delimits replies in "sit" mode when the return type is
+	// string (escape sequences like \n allowed).
+	Newline string `json:"newline"`
+	// Trim re-attaches the delimiter to each reply part in "sit"
+	// mode (Node-RED 're-attach' checkbox).
+	Trim bool `json:"trim"`
 	// Keep keeps the client connection open across messages instead of
 	// closing it after each request/reply (Node-RED's persistent
 	// client session). The connection is dropped on redeploy/stop.
@@ -142,12 +196,124 @@ type TCPRequestConfig struct {
 	TLS string `json:"tls"`
 }
 
+// resolved carries the effective host/port/framing after folding the
+// Node-RED fields (server/out/splitc) into the legacy ones.
+type resolved struct {
+	host      string
+	port      int
+	mode      string // timeout|delimiter|length|sit|immed
+	timeout   float64
+	delimiter string
+	length    int
+	keep      bool
+}
+
+// resolve folds the Node-RED serialized fields (server, out, splitc)
+// over the engine-native ones, then applies message metadata
+// overrides (Node-RED msg.host/msg.port → metadata host/port).
+func (c *TCPRequestConfig) resolve(input nodestore.MessageInterface) resolved {
+	r := resolved{
+		host:      c.Host,
+		port:      c.Port,
+		mode:      c.Mode,
+		timeout:   c.Timeout,
+		delimiter: c.Delimiter,
+		length:    c.Length,
+		keep:      c.Keep,
+	}
+	if c.Server != "" {
+		r.host = c.Server
+	}
+	if c.Out != "" {
+		switch c.Out {
+		case "char":
+			r.mode = "delimiter"
+			r.delimiter = unescapeSplitc(c.Splitc)
+		case "count":
+			r.mode = "length"
+			r.length = int(floatOfString(c.Splitc))
+		case "sit":
+			r.mode = "sit"
+			r.keep = true
+		case "immed":
+			r.mode = "immed"
+		default: // "time"
+			r.mode = "timeout"
+			if ms := floatOfString(c.Splitc); ms > 0 {
+				r.timeout = ms / 1000
+			}
+		}
+	}
+	if input != nil && input.GetMetadata() != nil {
+		if v, ok := input.GetMetadata()["host"].(string); ok && v != "" {
+			r.host = v
+		}
+		switch v := input.GetMetadata()["port"].(type) {
+		case string:
+			if p := floatOfString(v); p > 0 {
+				r.port = int(p)
+			}
+		case float64:
+			if v > 0 {
+				r.port = int(v)
+			}
+		}
+	}
+	return r
+}
+
+// unescapeSplitc decodes the Node-RED "char" close parameter — escape
+// spellings (\n, \r, \t, \e, \f, \0), a hex "0x.." byte or a raw
+// character (first byte wins, mirroring charCodeAt(0)). Node-RED
+// compares a single byte, so the result is one byte.
+func unescapeSplitc(s string) string {
+	var b byte
+	if len(s) >= 2 && s[0] == '\\' {
+		switch s[1] {
+		case 'n':
+			b = '\n'
+		case 'r':
+			b = '\r'
+		case 't':
+			b = '\t'
+		case 'e':
+			b = 0x1b
+		case 'f':
+			b = 0x0c
+		case '0':
+			b = 0x00
+		default:
+			b = s[0]
+		}
+		return string([]byte{b})
+	}
+	if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
+		var v int64
+		if _, err := fmt.Sscanf(s[2:], "%x", &v); err == nil {
+			return string([]byte{byte(v)})
+		}
+	}
+	if s == "" {
+		return ""
+	}
+	return s[:1]
+}
+
+// floatOfString parses a Node-RED string-serialized number.
+func floatOfString(s string) float64 {
+	var f float64
+	_, _ = fmt.Sscanf(strings.TrimSpace(s), "%g", &f)
+	return f
+}
+
 // tcpRequestState is the per-node workflow state for keep-alive
 // sessions — executors are rebuilt per message so the connection must
-// live in host state.
+// live in host state. buffer carries an unsplit reply remainder across
+// calls in sit mode (Node-RED's chunk accumulator).
 type tcpRequestState struct {
-	mu   sync.Mutex
-	conn net.Conn
+	mu     sync.Mutex
+	conn   net.Conn
+	buffer []byte
 }
 
 // TCPRequestNode sends the payload over a TCP connection and emits the
@@ -176,7 +342,8 @@ func (n *TCPRequestNode) Execute(ctx context.Context, input nodestore.MessageInt
 	if err != nil {
 		return nil, err
 	}
-	timeout := n.config.Timeout
+	r := n.config.resolve(input)
+	timeout := r.timeout
 	if timeout <= 0 {
 		timeout = 10
 	}
@@ -184,7 +351,7 @@ func (n *TCPRequestNode) Execute(ctx context.Context, input nodestore.MessageInt
 
 	var conn net.Conn
 	var state *tcpRequestState
-	if n.config.Keep && n.host != nil {
+	if r.keep && n.host != nil {
 		state = n.host.GetOrCreateNodeState(n.workflowID, n.GetID(), func() interface{} {
 			return &tcpRequestState{}
 		}).(*tcpRequestState)
@@ -210,7 +377,7 @@ func (n *TCPRequestNode) Execute(ctx context.Context, input nodestore.MessageInt
 		}
 	}
 	if conn == nil {
-		conn, err = n.dial(deadline)
+		conn, err = n.dial(r, deadline)
 		if err != nil {
 			return nil, err
 		}
@@ -229,10 +396,22 @@ func (n *TCPRequestNode) Execute(ctx context.Context, input nodestore.MessageInt
 		return nil, fmt.Errorf("tcpRequest write to %s failed: %w", conn.RemoteAddr(), err)
 	}
 
-	reply, err := n.readReply(conn, deadline)
+	if r.mode == "immed" {
+		// "immed" (Node-RED): send and close without waiting — the
+		// request carries no reply.
+		n.drop(state)
+		return input, nil
+	}
+
+	reply, err := n.readReply(conn, deadline, r, state)
 	if err != nil {
 		n.drop(state)
 		return nil, fmt.Errorf("tcpRequest read from %s failed: %w", conn.RemoteAddr(), err)
+	}
+	if reply == nil {
+		// sit mode: the buffered remainder carries no complete part
+		// yet — pass the message through unchanged.
+		return input, nil
 	}
 
 	metadata := nodebase.CloneMetadata(input)
@@ -263,12 +442,12 @@ func (n *TCPRequestNode) drop(state *tcpRequestState) {
 
 // dial opens a TCP (or TLS) connection to host:port bounded by the
 // request deadline.
-func (n *TCPRequestNode) dial(deadline time.Time) (net.Conn, error) {
-	host := n.config.Host
+func (n *TCPRequestNode) dial(r resolved, deadline time.Time) (net.Conn, error) {
+	host := r.host
 	if host == "" {
 		host = "127.0.0.1"
 	}
-	addr := net.JoinHostPort(host, fmt.Sprintf("%d", n.config.Port))
+	addr := net.JoinHostPort(host, fmt.Sprintf("%d", r.port))
 	dialer := &net.Dialer{Deadline: deadline}
 	if n.config.TLS != "" {
 		cfg, err := n.host.LoadTLSConfig(n.workflowID, n.config.TLS)
@@ -284,33 +463,87 @@ func (n *TCPRequestNode) dial(deadline time.Time) (net.Conn, error) {
 	return conn, nil
 }
 
-// readReply consumes the server reply per the configured framing.
-func (n *TCPRequestNode) readReply(conn net.Conn, deadline time.Time) ([]byte, error) {
+// readReply consumes the server reply per the configured framing. A
+// nil reply in "sit" mode means the buffered remainder holds no
+// complete part yet (the message passes through unchanged).
+func (n *TCPRequestNode) readReply(conn net.Conn, deadline time.Time, r resolved, state *tcpRequestState) ([]byte, error) {
 	if err := conn.SetReadDeadline(deadline); err != nil {
 		return nil, err
 	}
-	switch n.config.Mode {
+	switch r.mode {
 	case "", "timeout":
 		// Whatever arrives before the deadline is the reply; a
 		// half-close (EOF) ends early.
 		return io.ReadAll(conn)
 	case "delimiter":
-		delim := nodebase.UnescapeTCP(n.config.Delimiter)
+		delim := nodebase.UnescapeTCP(r.delimiter)
 		if delim == "" {
 			return nil, errors.New("tcpRequest delimiter mode requires a delimiter")
 		}
 		return readUntil(conn, []byte(delim), deadline)
 	case "length":
-		if n.config.Length <= 0 {
+		if r.length <= 0 {
 			return nil, errors.New("tcpRequest length mode requires a positive length")
 		}
-		buf := make([]byte, n.config.Length)
+		buf := make([]byte, r.length)
 		if _, err := io.ReadFull(conn, buf); err != nil {
 			return nil, err
 		}
 		return buf, nil
+	case "sit":
+		// Stay connected; each read window returns one reply. With a
+		// string return and a configured delimiter, replies split on
+		// it and the remainder carries into the next call.
+		return n.readSit(conn, deadline, r, state)
 	default:
-		return nil, fmt.Errorf("invalid tcpRequest mode %q (timeout|delimiter|length)", n.config.Mode)
+		return nil, fmt.Errorf("invalid tcpRequest mode %q (timeout|delimiter|length|sit|immed)", r.mode)
+	}
+}
+
+// readSit reads one reply chunk from a kept "sit" connection. The
+// deadline bounds this call only — the connection stays open.
+func (n *TCPRequestNode) readSit(conn net.Conn, deadline time.Time, r resolved, state *tcpRequestState) ([]byte, error) {
+	delim := ""
+	if n.config.Ret == "string" || n.config.Ret == "" {
+		delim = nodebase.UnescapeTCP(n.config.Newline)
+	}
+	tmp := make([]byte, 4096)
+	for {
+		if delim != "" && state != nil {
+			if idx := bytes.Index(state.buffer, []byte(delim)); idx >= 0 {
+				end := idx
+				if n.config.Trim {
+					end = idx + len(delim)
+				}
+				part := append([]byte(nil), state.buffer[:end]...)
+				state.buffer = state.buffer[idx+len(delim):]
+				return part, nil
+			}
+		}
+		_ = conn.SetReadDeadline(deadline)
+		nr, err := conn.Read(tmp)
+		if nr > 0 {
+			if state != nil {
+				state.buffer = append(state.buffer, tmp[:nr]...)
+			}
+			if delim == "" {
+				// No delimiter — each received chunk is a reply.
+				return append([]byte(nil), tmp[:nr]...), nil
+			}
+			continue // re-check the buffer for a completed part
+		}
+		if err != nil {
+			if nerr, ok := err.(net.Error); ok && nerr.Timeout() {
+				// Quiet window: flush whatever was buffered, if any.
+				if state != nil && len(state.buffer) > 0 {
+					out := state.buffer
+					state.buffer = nil
+					return out, nil
+				}
+				return nil, nil
+			}
+			return nil, err
+		}
 	}
 }
 
@@ -344,16 +577,24 @@ func (n *TCPRequestNode) Validate() error {
 	if n.config.Port <= 0 || n.config.Port > 65535 {
 		return fmt.Errorf("tcpRequest requires a valid port (1-65535)")
 	}
-	switch n.config.Mode {
-	case "", "timeout", "delimiter", "length":
+	r := n.config.resolve(nil)
+	switch r.mode {
+	case "", "timeout", "sit", "immed":
+	case "delimiter":
+		if nodebase.UnescapeTCP(r.delimiter) == "" {
+			return errors.New("tcpRequest delimiter mode requires a delimiter")
+		}
+	case "length":
+		if r.length <= 0 {
+			return errors.New("tcpRequest length mode requires a positive length")
+		}
 	default:
-		return fmt.Errorf("invalid tcpRequest mode %q (timeout|delimiter|length)", n.config.Mode)
+		return fmt.Errorf("invalid tcpRequest mode %q (timeout|delimiter|length|sit|immed)", r.mode)
 	}
-	if n.config.Mode == "delimiter" && nodebase.UnescapeTCP(n.config.Delimiter) == "" {
-		return errors.New("tcpRequest delimiter mode requires a delimiter")
-	}
-	if n.config.Mode == "length" && n.config.Length <= 0 {
-		return errors.New("tcpRequest length mode requires a positive length")
+	switch n.config.Out {
+	case "", "time", "char", "count", "sit", "immed":
+	default:
+		return fmt.Errorf("invalid tcpRequest out %q (time|char|count|sit|immed)", n.config.Out)
 	}
 	switch n.config.Ret {
 	case "", "string", "buffer":
