@@ -175,9 +175,9 @@ func (n *UDPOutNode) Execute(ctx context.Context, input nodestore.MessageInterfa
 	if n.config.Outport > 0 {
 		laddr = &net.UDPAddr{Port: n.config.Outport}
 	}
-	target := &net.UDPAddr{IP: net.ParseIP(host), Port: port}
-	if target.IP == nil {
-		return nil, fmt.Errorf("udpOut invalid target address %q", host)
+	target, err := net.ResolveUDPAddr(network, net.JoinHostPort(host, fmt.Sprintf("%d", port)))
+	if err != nil {
+		return nil, fmt.Errorf("udpOut invalid target address %q: %w", host, err)
 	}
 	conn, err := net.DialUDP(network, laddr, target)
 	if err != nil {

@@ -248,6 +248,8 @@ func TestTCPRequestMsgPortOverride(t *testing.T) {
 	// Node-RED msg.port overrides the configured port.
 	port := echoServer(t, func(conn net.Conn) {
 		defer conn.Close()
+		buf := make([]byte, 64)
+		conn.Read(buf) // drain the request first so close isn't a RST
 		conn.Write([]byte("via-msg"))
 	})
 	in := nodestore.NewMessage().SetPayload("q").SetMetadata(map[string]interface{}{

@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -53,6 +54,18 @@ var schema = map[string]interface{}{
 			"description": "JavaScript body over msg — return msg to pass it on, node.send([m1,m2]) for multi-output, node.error(str) to raise",
 			"default":     "return msg;",
 		},
+		"initialize": map[string]interface{}{
+			"type":        "string",
+			"format":      "textarea",
+			"title":       "On Start (JavaScript)",
+			"description": "Node-RED setup code — runs once when the node activates; a returned promise is awaited before messages flow",
+		},
+		"finalize": map[string]interface{}{
+			"type":        "string",
+			"format":      "textarea",
+			"title":       "On Stop (JavaScript)",
+			"description": "Node-RED close code — runs when the node stops",
+		},
 		"outputs": map[string]interface{}{
 			"type":        "integer",
 			"title":       "Outputs",
@@ -87,6 +100,13 @@ type FunctionConfig struct {
 	// (0 = no timeout, the Node-RED default). Expiry interrupts the VM
 	// via vm.Interrupt.
 	Timeout float64 `json:"timeout"`
+	// Initialize is the Node-RED "On Start" setup script — run once
+	// when the node activates (deploy). Returning a promise delays
+	// message processing until it settles (NR async-setup semantics).
+	Initialize string `json:"initialize"`
+	// Finalize is the Node-RED "On Stop" close script — run when the
+	// node stops (undeploy/redeploy).
+	Finalize string `json:"finalize"`
 }
 
 // functionSend records one message the script pushed out through
@@ -96,6 +116,144 @@ type functionSend struct {
 	msg  nodestore.MessageInterface
 }
 
+// scriptTimer is one pending setTimeout callback registered by the
+// script. The callback runs on the session VM under the session mutex.
+type scriptTimer struct {
+	callable  goja.Callable
+	cancelled atomic.Bool
+}
+
+// scriptSession owns one borrowed goja VM for the duration of a script
+// run PLUS any setTimeout callbacks the script scheduled. goja VMs are
+// single-threaded: every entry (the run itself and each timer
+// callback) serializes on mu. A session closes when the run finished
+// and all timers drained, or when the node stops.
+type scriptSession struct {
+	vm     *goja.Runtime
+	mu     sync.Mutex
+	n      *FunctionNode
+	st     *functionState
+	timers map[int64]*scriptTimer
+	nextID int64
+	runDone bool
+	closed     chan struct{}
+	closeOnce sync.Once
+}
+
+// isClosed reports whether the session was closed (node stopped or
+// the run finished with no pending timers).
+func (s *scriptSession) isClosed() bool {
+	select {
+	case <-s.closed:
+		return true
+	default:
+		return false
+	}
+}
+
+// close marks the session done: pending timer goroutines abort before
+// their next VM call and the session unregisters from the state so
+// Stop only pays for live sessions.
+func (s *scriptSession) close() {
+	s.closeOnce.Do(func() {
+		close(s.closed)
+		s.st.sessMu.Lock()
+		delete(s.st.sessions, s)
+		s.st.sessMu.Unlock()
+	})
+}
+
+// addTimer registers a setTimeout callback and launches its goroutine.
+// The goroutine sleeps for the delay, then runs the callback on the VM
+// under the session mutex — any sends it makes go through the async
+// path because the executor flipped asyncMode once the run finished.
+func (s *scriptSession) addTimer(fn goja.Callable, delay time.Duration) int64 {
+	s.mu.Lock()
+	s.nextID++
+	id := s.nextID
+	if s.timers == nil {
+		s.timers = map[int64]*scriptTimer{}
+	}
+	s.timers[id] = &scriptTimer{callable: fn}
+	s.mu.Unlock()
+
+	s.st.sessMu.Lock()
+	if s.st.sessions == nil {
+		s.st.sessions = map[*scriptSession]bool{}
+	}
+	s.st.sessions[s] = true
+	s.st.sessMu.Unlock()
+
+	go s.runTimer(id, delay)
+	return id
+}
+
+// clearTimer cancels a pending timer (clearTimeout).
+func (s *scriptSession) clearTimer(id int64) {
+	s.mu.Lock()
+	if t, ok := s.timers[id]; ok {
+		t.cancelled.Store(true)
+	}
+	s.mu.Unlock()
+}
+
+// runTimer waits for the delay then invokes the callback on the VM.
+// The callback executes under mu so it never overlaps RunProgram or a
+// sibling timer; promise jobs queued by it drain on goja's leave().
+func (s *scriptSession) runTimer(id int64, delay time.Duration) {
+	if delay > 0 {
+		t := time.NewTimer(delay)
+		select {
+		case <-t.C:
+		case <-s.closed:
+			t.Stop()
+			s.finishTimer(id)
+			return
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.finishTimer(id)
+	t, ok := s.timers[id]
+	if !ok || t.cancelled.Load() || s.isClosed() {
+		return
+	}
+	if _, err := t.callable(goja.Undefined()); err != nil {
+		s.n.emitScriptError(err)
+	}
+}
+
+// finishTimer removes a timer; when the run is over and no timers
+// remain the session closes itself.
+func (s *scriptSession) finishTimer(id int64) {
+	delete(s.timers, id)
+	if len(s.timers) == 0 && s.runDone {
+		s.close()
+	}
+}
+
+// endRun marks the script run complete; when no timer ever registered
+// the session closes immediately (the caller returns the VM to the
+// pool in that case — hasTimers() stays false).
+func (s *scriptSession) endRun() {
+	s.mu.Lock()
+	s.runDone = true
+	if len(s.timers) == 0 {
+		s.mu.Unlock()
+		s.close()
+		return
+	}
+	s.mu.Unlock()
+}
+
+// hasTimers reports whether the script scheduled callbacks — such VMs
+// stay with the session and are never returned to the pool.
+func (s *scriptSession) hasTimers() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.timers) > 0
+}
+
 // functionState is the per-node host state. goja VMs are NOT
 // goroutine-safe and executors are rebuilt per message, so VMs are
 // pooled here and each Execute borrows one, runs the script, then
@@ -103,13 +261,25 @@ type functionSend struct {
 // it lives in the host's ContextStore so it survives redeploys and,
 // with a persistent backend, process restarts.
 type functionState struct {
-	pool   sync.Pool // *goja.Runtime
-	mu     sync.Mutex
-	prog   *goja.Program
-	progOk bool
+	pool  sync.Pool // *goja.Runtime
+	mu    sync.Mutex
+	progs map[string]*goja.Program // keyed "func" | "initialize" | "finalize"
 	// sendQ lives inside the state: the host state slot is keyed by
 	// workflow+node id so only ONE state object may exist per node.
 	sendQ functionSendQueue
+	// sessions holds live scriptSessions (runs that scheduled
+	// setTimeout callbacks) so Stop can shut them down.
+	sessMu   sync.Mutex
+	sessions map[*scriptSession]bool
+	// Setup lifecycle: setupStarted flips when Activate begins running
+	// the initialize script; setupDone closes when it finishes —
+	// Execute blocks on it so messages wait for async setup exactly
+	// like Node-RED (and hosts that never call Activate leave
+	// setupStarted false, so Execute never blocks for them).
+	setupStarted atomic.Bool
+	setupDone    chan struct{}
+	setupOnce    sync.Once
+	setupErr     error
 }
 
 // FunctionNode executes arbitrary JavaScript over the message — the
@@ -138,6 +308,18 @@ type FunctionNode struct {
 	// inputID is the envelope ID of the message this Execute call is
 	// processing — parent of every msg the script sends.
 	inputID string
+	// sendMu serializes n.sends collection vs dispatch: a setTimeout
+	// callback calling node.send can interleave with the synchronous
+	// dispatch, so both lock. asyncMode flips inside the same
+	// critical section — a send after it goes straight to the queue.
+	sendMu    sync.Mutex
+	asyncMode atomic.Bool
+	// sess is this run's script session (VM owner for timers).
+	sess *scriptSession
+	// st caches the state resolved in Activate — Stop must use this
+	// pointer: host state is wiped before stoppers run, so
+	// re-resolving there would fabricate an empty state.
+	st *functionState
 }
 
 // NewFunctionNode creates a new function node
@@ -164,12 +346,27 @@ func (n *FunctionNode) Execute(ctx context.Context, input nodestore.MessageInter
 		n.inputID = input.GetID()
 	}
 
+	// Node-RED queues messages while async setup is in flight — wait
+	// for a started initialize script before executing the body.
+	if state.setupStarted.Load() {
+		select {
+		case <-state.setupDone:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		if state.setupErr != nil {
+			return nil, fmt.Errorf("function node setup failed: %w", state.setupErr)
+		}
+	}
+
 	vm := state.acquire()
 	if vm == nil {
 		return nil, fmt.Errorf("function node %s: failed to create JS runtime", n.GetID())
 	}
 	// The VM is returned to the pool on success; a timed-out run may
-	// carry a stale interrupt flag, so that VM is discarded instead.
+	// carry a stale interrupt flag, and a run that scheduled
+	// setTimeout callbacks keeps its VM inside the session — both are
+	// discarded instead.
 	returnToPool := true
 	defer func() {
 		if returnToPool {
@@ -177,22 +374,29 @@ func (n *FunctionNode) Execute(ctx context.Context, input nodestore.MessageInter
 		}
 	}()
 
+	sess := &scriptSession{vm: vm, n: n, st: state, closed: make(chan struct{})}
+	n.sess = sess
+
 	// Fresh per-run API surface — closures capture this executor so
 	// sends land on this message's collector, not a pooled one.
 	if err := n.injectGlobals(vm, input); err != nil {
 		return nil, err
 	}
 
-	prog, err := state.program(n.config.Func)
+	prog, err := state.program("func", n.config.Func)
 	if err != nil {
 		return nil, err
 	}
 
 	// Run the script in a goroutine so a wall-clock timeout can
 	// interrupt the VM (goja checks the interrupt flag in its loop).
+	// The run holds the session mutex: setTimeout callbacks spawned
+	// during the run serialize behind it.
 	runDone := make(chan error, 1)
 	go func() {
+		sess.mu.Lock()
 		_, err := vm.RunProgram(prog)
+		sess.mu.Unlock()
 		runDone <- err
 	}()
 
@@ -214,6 +418,12 @@ func (n *FunctionNode) Execute(ctx context.Context, input nodestore.MessageInter
 		}
 	} else {
 		runErr = <-runDone
+	}
+	sess.endRun()
+	// A run that scheduled timers keeps its VM inside the session —
+	// callbacks will call back into it until drained or stopped.
+	if sess.hasTimers() {
+		returnToPool = false
 	}
 	if runErr != nil {
 		return nil, fmt.Errorf("function script error: %w", runErr)
@@ -275,6 +485,12 @@ func (n *FunctionNode) SelectPorts(input, output nodestore.MessageInterface) []s
 // a running flow (unit tests) fall back to the legacy split: the
 // first send on the lowest-indexed port returns and the rest Emit.
 func (n *FunctionNode) dispatch() (nodestore.MessageInterface, error) {
+	// Flip asyncMode under sendMu so a timer callback's node.send that
+	// raced the end of the run lands either in n.sends (handled here)
+	// or the async path — never appended after this read.
+	n.sendMu.Lock()
+	defer n.sendMu.Unlock()
+	n.asyncMode.Store(true)
 	if len(n.sends) == 0 {
 		return nil, nil // drop
 	}
@@ -378,18 +594,53 @@ func (n *FunctionNode) sendQueue() *functionSendQueue {
 
 // handleSend interprets a send argument (node.send call arg or the
 // script's return value): an array is a per-port list (index → port,
-// null skips the port); anything else is a message for port -1 (auto).
+// null skips the port) where each element may itself be an array of
+// messages for that port (Node-RED's [[m1,m2],m3] multi-send); anything
+// else is a message for port -1 (auto). After the run's synchronous
+// phase ends (asyncMode), sends emit directly through the send queue —
+// that is how setTimeout callbacks deliver their messages.
 func (n *FunctionNode) handleSend(v interface{}) {
+	sends := collectSends(v, n.inputID)
+	n.sendMu.Lock()
+	async := n.asyncMode.Load()
+	if !async {
+		n.sends = append(n.sends, sends...)
+	}
+	n.sendMu.Unlock()
+	if !async {
+		return
+	}
+	workflow, ok := n.host.RunningFlow(n.workflowID)
+	if !ok || workflow == nil {
+		return // no running flow (activation, undeployed) — drop
+	}
+	n.sendQueue().enqueue(sends, n, workflow)
+}
+
+// collectSends expands a send argument into (port, msg) pairs using
+// Node-RED's array rules: a top-level array is per-port, and an array
+// element that is itself an array sends each element on that port.
+func collectSends(v interface{}, parentID string) []functionSend {
 	if arr, ok := v.([]interface{}); ok {
+		var sends []functionSend
 		for i, item := range arr {
 			if item == nil {
 				continue
 			}
-			n.sends = append(n.sends, functionSend{port: i, msg: msgToPayload(item, n.inputID)})
+			if inner, ok := item.([]interface{}); ok {
+				for _, m := range inner {
+					if m == nil {
+						continue
+					}
+					sends = append(sends, functionSend{port: i, msg: msgToPayload(m, parentID)})
+				}
+				continue
+			}
+			sends = append(sends, functionSend{port: i, msg: msgToPayload(item, parentID)})
 		}
-		return
+		return sends
 	}
-	n.sends = append(n.sends, functionSend{port: -1, msg: msgToPayload(v, n.inputID)})
+	return []functionSend{{port: -1, msg: msgToPayload(v, parentID)}}
 }
 
 // injectGlobals sets the script-visible globals on the VM: msg, node
@@ -398,16 +649,24 @@ func (n *FunctionNode) handleSend(v interface{}) {
 // All closures capture this executor, so they only live for one
 // Execute call.
 func (n *FunctionNode) injectGlobals(vm *goja.Runtime, input nodestore.MessageInterface) error {
-	msg := map[string]interface{}{}
-	for k, v := range input.GetMetadata() {
-		msg[k] = v
-	}
-	msg["payload"] = input.GetPayload()
-	// Node-RED msg._msgid is the per-instance envelope ID; msgToPayload
-	// maps it back on the way out.
-	msg["_msgid"] = input.GetID()
-	if err := vm.Set("msg", msg); err != nil {
-		return err
+	if input == nil {
+		// Lifecycle runs (initialize/finalize) have no incoming
+		// message — Node-RED leaves msg undefined there.
+		if err := vm.Set("msg", goja.Undefined()); err != nil {
+			return err
+		}
+	} else {
+		msg := map[string]interface{}{}
+		for k, v := range input.GetMetadata() {
+			msg[k] = v
+		}
+		msg["payload"] = input.GetPayload()
+		// Node-RED msg._msgid is the per-instance envelope ID;
+		// msgToPayload maps it back on the way out.
+		msg["_msgid"] = input.GetID()
+		if err := vm.Set("msg", msg); err != nil {
+			return err
+		}
 	}
 
 	nodeObj := map[string]interface{}{
@@ -456,6 +715,51 @@ func (n *FunctionNode) injectGlobals(vm *goja.Runtime, input nodestore.MessageIn
 		},
 	}
 	if err := vm.Set("node", nodeObj); err != nil {
+		return err
+	}
+
+	// Node-RED timer surface: goja has no event loop, so timers are
+	// host-provided — each callback runs on this session's VM after
+	// its delay, serialized with the script run via sess.mu.
+	if err := vm.Set("setTimeout", func(call goja.FunctionCall) goja.Value {
+		if n.sess == nil || len(call.Arguments) == 0 {
+			return goja.Undefined()
+		}
+		fn, ok := goja.AssertFunction(call.Arguments[0])
+		if !ok {
+			return goja.Undefined()
+		}
+		delay := 0.0
+		if len(call.Arguments) > 1 {
+			delay = call.Arguments[1].ToFloat()
+		}
+		if delay < 0 {
+			delay = 0
+		}
+		id := n.sess.addTimer(fn, time.Duration(delay*float64(time.Millisecond)))
+		return vm.ToValue(id)
+	}); err != nil {
+		return err
+	}
+	if err := vm.Set("clearTimeout", func(call goja.FunctionCall) goja.Value {
+		if n.sess != nil && len(call.Arguments) > 0 {
+			n.sess.clearTimer(call.Arguments[0].ToInteger())
+		}
+		return goja.Undefined()
+	}); err != nil {
+		return err
+	}
+	// console.* is the Node-RED function-script console — routed to
+	// the node's event stream (log→info, warn/error→warn so a
+	// console.error cannot masquerade as a script error).
+	consoleObj := map[string]interface{}{}
+	for _, level := range []string{"log", "debug"} {
+		consoleObj[level] = n.consoleFunc(vm, "info")
+	}
+	for _, level := range []string{"warn", "error"} {
+		consoleObj[level] = n.consoleFunc(vm, "warn")
+	}
+	if err := vm.Set("console", consoleObj); err != nil {
 		return err
 	}
 
@@ -635,7 +939,7 @@ func (n *FunctionNode) timeout() time.Duration {
 // state returns (creating if needed) the per-node VM pool + compiled program.
 func (n *FunctionNode) state() *functionState {
 	return n.host.GetOrCreateNodeState(n.workflowID, n.GetID(), func() interface{} {
-		s := &functionState{}
+		s := &functionState{setupDone: make(chan struct{})}
 		s.pool.New = func() interface{} { return goja.New() }
 		return s
 	}).(*functionState)
@@ -650,29 +954,168 @@ func (s *functionState) acquire() *goja.Runtime {
 	return v.(*goja.Runtime)
 }
 
-// program returns the compiled script, compiling and caching it on
-// first use. The body is wrapped so `return msg`, node.send etc. work
+// program returns the compiled script for the given slot
+// ("func"|"initialize"|"finalize"), compiling and caching it on first
+// use. The body is wrapped so `return msg`, node.send etc. work
 // Node-RED style; the result is exposed as the __result global.
-func (s *functionState) program(source string) (*goja.Program, error) {
+func (s *functionState) program(key, source string) (*goja.Program, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.progOk {
-		return s.prog, nil
+	if prog, ok := s.progs[key]; ok {
+		return prog, nil
 	}
 	// Node-RED wraps the body in an async function — top-level await
 	// (e.g. `await node.linkcall(...)`) is legal there. goja resolves
 	// promises whose awaited values are plain results inline, so
 	// synchronous scripts still complete inside RunProgram and only
-	// the promise-unboxing below changes.
+	// the promise-unboxing below changes. Lifecycle scripts get the
+	// same signature minus msg (it is set to undefined for them).
+	args := "(msg, node, context, flow, global, env)"
+	if key != "func" {
+		args = "(undefined, node, context, flow, global, env)"
+	}
 	wrapped := "var __result = (async function (msg, node, context, flow, global, env) {\n" +
-		source + "\n})(msg, node, context, flow, global, env);"
+		source + "\n})" + args + ";"
 	prog, err := goja.Compile("function", wrapped, false)
 	if err != nil {
 		return nil, fmt.Errorf("function script compile error: %w", err)
 	}
-	s.prog = prog
-	s.progOk = true
+	if s.progs == nil {
+		s.progs = map[string]*goja.Program{}
+	}
+	s.progs[key] = prog
 	return prog, nil
+}
+
+// consoleFunc builds a console.* method — args are stringified and
+// joined like the JS console, then emitted as a node event.
+func (n *FunctionNode) consoleFunc(vm *goja.Runtime, level string) func(goja.FunctionCall) goja.Value {
+	return func(call goja.FunctionCall) goja.Value {
+		parts := make([]string, 0, len(call.Arguments))
+		for _, a := range call.Arguments {
+			parts = append(parts, a.String())
+		}
+		n.host.EmitEvent(n.workflowID, n.GetID(), n.GetID(), level, strings.Join(parts, " "))
+		return goja.Undefined()
+	}
+}
+
+// emitScriptError surfaces an error thrown inside a timer callback —
+// the same shape as a synchronous script error.
+func (n *FunctionNode) emitScriptError(err error) {
+	n.host.EmitEvent(n.workflowID, n.GetID(), n.GetID(), "error", fmt.Sprintf("function script error: %v", err))
+}
+
+// Activate implements nodebase.Activator: runs the Node-RED "On Start"
+// (initialize) script on deploy. A returned promise is awaited — the
+// script's setTimeout callbacks drive it — so DeployWorkflow blocks
+// until async setup settles, matching Node-RED. The state pointer is
+// cached for Stop because host state is wiped before stoppers run.
+func (n *FunctionNode) Activate(ctx context.Context) error {
+	n.st = n.state()
+	n.st.setupStarted.Store(true)
+	defer n.st.setupOnce.Do(func() { close(n.st.setupDone) })
+	if n.config.Initialize == "" {
+		return nil
+	}
+	err := n.runLifecycleScript(ctx, "initialize", n.config.Initialize, true)
+	if err != nil {
+		n.st.setupErr = err
+	}
+	return err
+}
+
+// Stop implements nodebase.Stopper: cancels pending script timers and
+// runs the "On Stop" (finalize) script. It must not re-resolve host
+// state — the cached pointer from Activate is the only safe reference.
+func (n *FunctionNode) Stop() error {
+	st := n.st
+	if st == nil {
+		return nil
+	}
+	st.sessMu.Lock()
+	sessions := make([]*scriptSession, 0, len(st.sessions))
+	for s := range st.sessions {
+		sessions = append(sessions, s)
+	}
+	st.sessMu.Unlock()
+	for _, s := range sessions {
+		s.close()
+	}
+	if n.config.Finalize == "" {
+		return nil
+	}
+	return n.runLifecycleScript(context.Background(), "finalize", n.config.Finalize, false)
+}
+
+// StopKey dedupes stopper registration: executors are rebuilt per
+// message, but only the activation executor should stop the node.
+func (n *FunctionNode) StopKey() string {
+	return "function:" + n.workflowID + ":" + n.GetID()
+}
+
+// runLifecycleScript executes an initialize/finalize script: globals
+// are injected with msg undefined, the script runs inside the same
+// async wrapper as the body (so top-level await works), and when
+// waitPromise is set a pending __result promise is awaited — timer
+// callbacks the script scheduled are what settles it.
+func (n *FunctionNode) runLifecycleScript(ctx context.Context, key, source string, waitPromise bool) error {
+	st := n.st
+	vm := st.acquire()
+	if vm == nil {
+		return fmt.Errorf("function node %s: failed to create JS runtime", n.GetID())
+	}
+	sess := &scriptSession{vm: vm, n: n, st: st, closed: make(chan struct{})}
+	n.sess = sess
+	n.asyncMode.Store(true) // lifecycle sends go straight to the queue
+	returnToPool := true
+	defer func() {
+		sess.endRun()
+		if sess.hasTimers() {
+			returnToPool = false
+		}
+		if returnToPool {
+			st.pool.Put(vm)
+		}
+	}()
+
+	if err := n.injectGlobals(vm, nil); err != nil {
+		return err
+	}
+	prog, err := st.program(key, source)
+	if err != nil {
+		return err
+	}
+	sess.mu.Lock()
+	_, runErr := vm.RunProgram(prog)
+	result := vm.Get("__result")
+	sess.mu.Unlock()
+	if runErr != nil {
+		return fmt.Errorf("function script error: %w", runErr)
+	}
+	if !waitPromise || result == nil {
+		return nil
+	}
+	promise, ok := result.Export().(*goja.Promise)
+	if !ok {
+		return nil
+	}
+	for {
+		sess.mu.Lock()
+		state := promise.State()
+		sess.mu.Unlock()
+		switch state {
+		case goja.PromiseStateFulfilled:
+			return nil
+		case goja.PromiseStateRejected:
+			return fmt.Errorf("function script error: %v", promise.Result())
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
 }
 
 // portKey maps a zero-based send index to the edge source port key.

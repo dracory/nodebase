@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"testing"
@@ -63,6 +62,10 @@ func newNode(cfg *TCPOutConfig, host *fakeHost) *TCPOutNode {
 	return NewTCPOutNode(nodestore.NewNode("t1", "tcpOut").SetWorkflowID("wf"), cfg, host)
 }
 
+func newNodeID(id string, cfg *TCPOutConfig, host *fakeHost) *TCPOutNode {
+	return NewTCPOutNode(nodestore.NewNode(id, "tcpOut").SetWorkflowID("wf"), cfg, host)
+}
+
 func TestTCPOutDial(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -76,8 +79,11 @@ func TestTCPOutDial(t *testing.T) {
 			return
 		}
 		defer conn.Close()
-		b, _ := io.ReadAll(conn)
-		got <- b
+		// client mode keeps the connection open — read one chunk
+		// rather than ReadAll (which would wait for a close).
+		b := make([]byte, 64)
+		nr, _ := conn.Read(b)
+		got <- b[:nr]
 	}()
 
 	port := ln.Addr().(*net.TCPAddr).Port
@@ -249,7 +255,7 @@ func TestTCPOutClientPersistent(t *testing.T) {
 	read(t, conn, "two")
 
 	// end:true closes after the write; the next message re-dials.
-	n2 := newNode(&TCPOutConfig{Beserver: "client", Host: "127.0.0.1", Port: port, End: true}, host)
+	n2 := newNodeID("t2", &TCPOutConfig{Beserver: "client", Host: "127.0.0.1", Port: port, End: true}, host)
 	defer n2.Stop()
 	if _, err := n2.Execute(context.Background(), nodestore.NewMessage().SetPayload("bye")); err != nil {
 		t.Fatalf("end write: %v", err)
