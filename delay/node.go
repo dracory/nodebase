@@ -349,14 +349,26 @@ func (n *DelayNode) clearHeld() {
 	state.held = nil
 }
 
+// flushLimit resolves how many messages a flush releases — the
+// numeric count when the flush property is a number, otherwise -1
+// for "all". Booleans never count as numbers (JS parity: typeof
+// msg.flush === "number" — Node-RED treats flush:true as flush all).
+func flushLimit(v interface{}) int {
+	switch v.(type) {
+	case bool:
+		return -1
+	}
+	if f, ok := nodebase.ParseNumeric(v); ok {
+		return int(f)
+	}
+	return -1
+}
+
 // flushHeld releases parked messages immediately — the first n when
 // the flush property is numeric, otherwise all of them.
 func (n *DelayNode) flushHeld(v interface{}) {
 	state := n.state()
-	limit := -1
-	if f, ok := nodebase.ParseNumeric(v); ok {
-		limit = int(f)
-	}
+	limit := flushLimit(v)
 	state.mu.Lock()
 	var out []nodestore.MessageInterface
 	for len(state.held) > 0 && (limit < 0 || len(out) < limit) {
@@ -650,10 +662,7 @@ func (n *DelayNode) resetBuckets() {
 func (n *DelayNode) flushBuckets(v interface{}) {
 	state := n.state()
 	state.mu.Lock()
-	limit := -1
-	if f, ok := nodebase.ParseNumeric(v); ok {
-		limit = int(f)
-	}
+	limit := flushLimit(v)
 	var out []nodestore.MessageInterface
 	for key, b := range state.buckets {
 		for len(b.queue) > 0 && (limit < 0 || len(out) < limit) {
