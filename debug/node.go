@@ -59,10 +59,16 @@ var schema = map[string]interface{}{
 			"type":    "string",
 			"title":   "Output",
 			"default": "payload",
-			"description": "payload (or empty): the message data · true: complete msg object " +
-				"incl. metadata · false: bare marker · any other string is a msg.<path> " +
+			"description": "payload (or empty, and Node-RED's legacy \"false\"): the message data · " +
+				"true: complete msg object incl. metadata · any other string is a msg.<path> " +
 				"(e.g. \"topic\" or \"payload.user\"). Node-RED's JSONata \"expression\" " +
 				"option is not supported — use a function node.",
+		},
+		"tosidebar": map[string]interface{}{
+			"type":        "boolean",
+			"title":       "Show in Debug Panel",
+			"description": "false suppresses the debug-panel event (Node-RED tosidebar)",
+			"default":     true,
 		},
 		"statusVal": map[string]interface{}{
 			"type":        "string",
@@ -76,8 +82,10 @@ var schema = map[string]interface{}{
 type DebugConfig struct {
 	// Active toggles the node; false means deployed but muted (no events)
 	Active *bool `json:"active"`
-	// Console also prints the formatted value to stdout
-	Console bool `json:"console"`
+	// Console also prints the formatted value to stdout. Node-RED
+	// serializes this as a string ("false") in some exports — flexBool
+	// accepts both spellings.
+	Console flexBool `json:"console"`
 	// Complete selects what is displayed: "payload" (Data only),
 	// "true" (the whole payload including Metadata) or "false"
 	// (a bare marker, Node-RED's "node name only" behaviour)
@@ -85,6 +93,29 @@ type DebugConfig struct {
 	// StatusVal is an optional property path whose value is also
 	// reported as the node's status text (emitted as an extra event)
 	StatusVal string `json:"statusVal"`
+	// Tosidebar mirrors Node-RED: false suppresses the debug-panel
+	// event entirely (console output is unaffected). Default true.
+	Tosidebar *flexBool `json:"tosidebar"`
+}
+
+// flexBool is a bool that also accepts Node-RED's string spelling
+// ("true"/"false") in serialized configs.
+type flexBool bool
+
+// UnmarshalJSON accepts true, false, "true", "false" (and ""/null as
+// false).
+func (b *flexBool) UnmarshalJSON(data []byte) error {
+	var v interface{}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	switch t := v.(type) {
+	case bool:
+		*b = flexBool(t)
+	case string:
+		*b = flexBool(t == "true")
+	}
+	return nil
 }
 
 // DebugNode passes the payload through unchanged; the formatted debug
@@ -118,7 +149,10 @@ func (n *DebugNode) PostRunEvents(node nodestore.NodeInterface, out nodestore.Me
 	if !ok {
 		return nil
 	}
-	events := []nodebase.RunEvent{{Level: "debug", Message: message}}
+	var events []nodebase.RunEvent
+	if debugTosidebar(node) {
+		events = append(events, nodebase.RunEvent{Level: "debug", Message: message})
+	}
 	if console, _ := node.GetData()["console"].(bool); console {
 		fmt.Println(message)
 	}
@@ -144,6 +178,16 @@ func debugActive(node nodestore.NodeInterface) bool {
 	return true
 }
 
+// debugTosidebar reports whether the node emits debug-panel events —
+// Node-RED's tosidebar option (default true). A false value means the
+// message only goes to the console.
+func debugTosidebar(node nodestore.NodeInterface) bool {
+	if ts, ok := node.GetData()["tosidebar"].(bool); ok {
+		return ts
+	}
+	return true
+}
+
 // debugMessage formats the value a debug node displays for the given
 // payload, honouring the "complete" config option. The boolean result
 // is false when the node is muted (active=false) and nothing should
@@ -158,9 +202,9 @@ func debugMessage(node nodestore.NodeInterface, out nodestore.MessageInterface) 
 	switch complete {
 	case "true":
 		value = out // the whole payload, Metadata included
-	case "false":
-		return "debug", true // bare marker — Node-RED "node name only"
-	case "", "payload":
+	case "", "payload", "false":
+		// Node-RED parity: complete:"false" is the legacy marker for
+		// "payload" (21-debug.js: this.complete === "false" → "payload")
 		if out != nil {
 			value = out.GetPayload()
 		}
@@ -181,7 +225,15 @@ func debugMessage(node nodestore.NodeInterface, out nodestore.MessageInterface) 
 		}
 	}
 
-	raw, err := json.MarshalIndent(value, "", "  ")
+	// Node-RED renders a missing value as "(undefined)"
+	if value == nil {
+		return "(undefined)", true
+	}
+	// Node-RED renders strings bare (no JSON quotes) in the sidebar
+	if s, ok := value.(string); ok {
+		return s, true
+	}
+	raw, err := json.Marshal(value) // Node-RED renders compact JSON
 	if err != nil {
 		return fmt.Sprintf("%v", value), true
 	}

@@ -19,7 +19,72 @@ func factory(n nodestore.NodeInterface, e nodebase.NodeHost) (nodebase.NodeExecu
 	if err := nodebase.DecodeConfig(n, c); err != nil {
 		return nil, err
 	}
+	// Imported Node-RED flows carry rules in upstream shape
+	// ({t:"eq",p:"payload",pt:"msg",v:"1",vt:"num"}) — translate
+	// the ops we support; anything else fails loud at deploy.
+	if err := translateNRRules(n, c); err != nil {
+		return nil, err
+	}
 	return NewSwitchNode(n, c), nil
+}
+
+// nrRuleOps maps Node-RED rule type codes onto native ops. Types with
+// no native equivalent (btwn, head, tail, index, hask, jsonata_exp,
+// true/false/null/nnull, nempty) are deliberately absent.
+var nrRuleOps = map[string]string{
+	"eq": "eq", "neq": "neq", "lt": "lt", "lte": "lte",
+	"gt": "gt", "gte": "gte", "cont": "contains",
+	"regex": "regex", "empty": "empty", "istype": "istype",
+}
+
+// translateNRRules rewrites c.Rules in place when they arrived in the
+// upstream Node-RED serialization ({t,p,pt,v,vt} keys rather than
+// {property,op,value}). An "else" rule sets the otherwise port. Rules
+// referencing flow/global context or unsupported types error out.
+func translateNRRules(n nodestore.NodeInterface, c *SwitchConfig) error {
+	raw, ok := n.GetData()["rules"].([]interface{})
+	if !ok {
+		return nil
+	}
+	translated := make([]nodebase.SwitchRule, 0, len(raw))
+	for i, r := range raw {
+		m, ok := r.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if _, hasOp := m["op"]; hasOp {
+			continue // already native shape
+		}
+		t, _ := m["t"].(string)
+		if t == "" {
+			continue
+		}
+		if t == "else" {
+			c.Otherwise = true
+			continue
+		}
+		op, supported := nrRuleOps[t]
+		if !supported {
+			return fmt.Errorf("switch: rule %d uses Node-RED type %q which has no equivalent op", i, t)
+		}
+		if pt, _ := m["pt"].(string); pt != "" && pt != "msg" {
+			return fmt.Errorf("switch: rule %d reads %s context — only msg properties are supported", i, pt)
+		}
+		p, _ := m["p"].(string)
+		// msg.payload maps to the payload itself (""); msg.payload.x
+		// strips the prefix; anything else (msg.topic, …) resolves via
+		// the metadata fallback in EvalSwitchRule.
+		p = strings.TrimPrefix(p, "payload.")
+		if p == "payload" {
+			p = ""
+		}
+		v, _ := m["v"].(string)
+		translated = append(translated, nodebase.SwitchRule{Property: p, Op: op, Value: v})
+	}
+	if len(translated) > 0 {
+		c.Rules = translated
+	}
+	return nil
 }
 
 // init registers the switch node with the core set.

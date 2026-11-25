@@ -10,6 +10,26 @@ import (
 // retired flowdashboard/nodepacks packs (cutover P3) resolve from the
 // registry with a factory, palette metadata, schema and editor HTML —
 // everything the nodeadmin palette serves.
+// TestAITypesRegistered asserts the ai-* nodes resolve from the
+// registry with a factory, palette metadata, schema and editor HTML.
+func TestAITypesRegistered(t *testing.T) {
+	for _, typeID := range []string{"ai-provider", "ai-request"} {
+		reg, ok := nodebase.RegisteredNode(typeID)
+		if !ok {
+			t.Fatalf("type %q not registered", typeID)
+		}
+		if reg.Factory == nil {
+			t.Fatalf("type %q has no factory", typeID)
+		}
+		if reg.Descriptor.Schema == nil {
+			t.Fatalf("type %q has no schema", typeID)
+		}
+		if reg.Descriptor.EditorHTML == "" {
+			t.Fatalf("type %q has no editor HTML", typeID)
+		}
+	}
+}
+
 func TestPortedTypesRegistered(t *testing.T) {
 	for _, typeID := range []string{
 		"uiText", "uiGauge", "uiChart", "uiNotification",

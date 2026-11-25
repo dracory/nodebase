@@ -285,13 +285,23 @@ func (n *TemplateNode) renderGoTemplate(tpl string, input nodestore.MessageInter
 	return buf.String(), nil
 }
 
-// renderMustache renders the template the way Node-RED does: the
-// message itself (payload + every metadata property) is the mustache
-// context; {{env.X}}, {{flow.X}} and {{global.X}} tags are resolved
-// against the host before rendering — the two-phase NodeContext
-// behaviour, where context tokens are pre-resolved and message
-// properties take precedence.
+// renderMustache renders the template the way Node-RED does — see
+// RenderMustache, which this wraps with the node's host, workflow and
+// JSON-escaping behaviour.
 func (n *TemplateNode) renderMustache(tpl string, input nodestore.MessageInterface) (string, error) {
+	return RenderMustache(tpl, input, n.host, n.workflowID, n.GetID(), n.outputFormat() == "json")
+}
+
+// RenderMustache renders a mustache template the way Node-RED does:
+// the message itself (payload + every metadata property) is the
+// mustache context; {{env.X}}, {{flow.X}} and {{global.X}} tags are
+// resolved against the host before rendering — the two-phase
+// NodeContext behaviour, where context tokens are pre-resolved and
+// message properties take precedence. host may be nil — context tags
+// then resolve to empty. jsonEscape applies Node-RED's JSON-mode
+// string escaping to the message context. Shared by nodes that
+// template user text against the message (e.g. ai-request).
+func RenderMustache(tpl string, input nodestore.MessageInterface, host nodebase.NodeHost, workflowID, nodeID string, jsonEscape bool) (string, error) {
 	tmpl, err := mustache.ParseString(tpl)
 	if err != nil {
 		return "", fmt.Errorf("template parse error: %w", err)
@@ -307,7 +317,7 @@ func (n *TemplateNode) renderMustache(tpl string, input nodestore.MessageInterfa
 
 	// Node-RED escapes strings from the message context when the
 	// output mode is JSON so rendered output stays valid JSON.
-	if n.outputFormat() == "json" {
+	if jsonEscape {
 		msgCtx = escapeStringsDeep(msgCtx).(map[string]interface{})
 	}
 
@@ -315,7 +325,7 @@ func (n *TemplateNode) renderMustache(tpl string, input nodestore.MessageInterfa
 	for k, v := range msgCtx {
 		ctx[k] = v
 	}
-	n.resolveContextTags(tmpl, ctx)
+	resolveContextTags(tmpl, ctx, host, workflowID, nodeID)
 
 	rendered, err := tmpl.Render(ctx)
 	if err != nil {
@@ -333,10 +343,10 @@ func (n *TemplateNode) renderMustache(tpl string, input nodestore.MessageInterfa
 // tokens stay unresolved (rendering empty, matching a missing key).
 // Message properties win: when the message already carries a
 // flow/global/env key of a different shape it is left alone.
-func (n *TemplateNode) resolveContextTags(tmpl *mustache.Template, ctx map[string]interface{}) {
+func resolveContextTags(tmpl *mustache.Template, ctx map[string]interface{}, host nodebase.NodeHost, workflowID, nodeID string) {
 	for _, name := range tagNames(tmpl.Tags()) {
 		if m := envTagRe.FindStringSubmatch(name); m != nil {
-			if v, ok := n.lookupEnv(m[1]); ok {
+			if v, ok := lookupEnv(host, workflowID, nodeID, m[1]); ok {
 				setNested(ctx, "env", m[1], v)
 			}
 			continue
@@ -345,11 +355,11 @@ func (n *TemplateNode) resolveContextTags(tmpl *mustache.Template, ctx map[strin
 			if m[3] != "" {
 				continue // named persistable store — unsupported
 			}
-			scope, scopeID := nodebase.ContextScopeFlow, n.workflowID
+			scope, scopeID := nodebase.ContextScopeFlow, workflowID
 			if m[1] == "global" {
 				scope, scopeID = nodebase.ContextScopeGlobal, ""
 			}
-			if v, ok := n.lookupContext(scope, scopeID, m[4]); ok {
+			if v, ok := lookupContext(host, scope, scopeID, m[4]); ok {
 				setNested(ctx, m[1], m[4], v)
 			}
 		}
@@ -386,14 +396,14 @@ func setNested(ctx map[string]interface{}, scope, key string, value interface{})
 // lookupEnv resolves an environment variable the way the function
 // node's env.get does: host NodeEnv first, then the OS environment
 // when the host opts in via OSEnvAllowed.
-func (n *TemplateNode) lookupEnv(name string) (interface{}, bool) {
-	if n.host == nil {
+func lookupEnv(host nodebase.NodeHost, workflowID, nodeID, name string) (interface{}, bool) {
+	if host == nil {
 		return nil, false
 	}
-	if v, ok := n.host.NodeEnv(n.workflowID, n.GetID(), name); ok {
+	if v, ok := host.NodeEnv(workflowID, nodeID, name); ok {
 		return v, true
 	}
-	g, ok := n.host.(interface{ OSEnvAllowed() bool })
+	g, ok := host.(interface{ OSEnvAllowed() bool })
 	if !ok || !g.OSEnvAllowed() {
 		return nil, false
 	}
@@ -405,11 +415,11 @@ func (n *TemplateNode) lookupEnv(name string) (interface{}, bool) {
 
 // lookupContext reads a key from the host context store; nil host or
 // store error resolves to absent.
-func (n *TemplateNode) lookupContext(scope, scopeID, key string) (interface{}, bool) {
-	if n.host == nil {
+func lookupContext(host nodebase.NodeHost, scope, scopeID, key string) (interface{}, bool) {
+	if host == nil {
 		return nil, false
 	}
-	v, ok, err := n.host.ResolvedContextStore().GetContext(scope, scopeID, key)
+	v, ok, err := host.ResolvedContextStore().GetContext(scope, scopeID, key)
 	if err != nil || !ok {
 		return nil, false
 	}

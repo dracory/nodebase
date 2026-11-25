@@ -4,11 +4,36 @@ package linkcall
 import (
 	"context"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"github.com/dracory/nodebase"
 	nodestore "github.com/dracory/nodestore"
+	"strconv"
 	"time"
 )
+
+// flexNumber is a float64 that also accepts Node-RED's string spelling
+// ("30") in serialized configs.
+type flexNumber float64
+
+// UnmarshalJSON accepts both a number and a numeric string.
+func (f *flexNumber) UnmarshalJSON(data []byte) error {
+	var v interface{}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	switch t := v.(type) {
+	case float64:
+		*f = flexNumber(t)
+	case string:
+		n, err := strconv.ParseFloat(t, 64)
+		if err != nil {
+			return err
+		}
+		*f = flexNumber(n)
+	}
+	return nil
+}
 
 //go:embed editor.html
 var editorHTML string
@@ -72,8 +97,10 @@ type LinkCallConfig struct {
 	// LinkType is "static" (configured link) or "dynamic" (target taken
 	// from the message's target metadata)
 	LinkType string `json:"linkType"`
-	// Timeout in seconds to await the linkOut return (default 30)
-	Timeout float64 `json:"timeout"`
+	// Timeout in seconds to await the linkOut return (default 30).
+	// Node-RED serializes this as a string ("30") — flexNumber accepts
+	// both spellings.
+	Timeout flexNumber `json:"timeout"`
 }
 
 // NewLinkCallNode creates a new linkCall node
@@ -127,7 +154,7 @@ func (n *LinkCallNode) Execute(ctx context.Context, input nodestore.MessageInter
 
 	timeout := nodebase.DefaultLinkCallTimeout
 	if n.config.Timeout > 0 {
-		timeout = time.Duration(n.config.Timeout * float64(time.Second))
+		timeout = time.Duration(float64(n.config.Timeout) * float64(time.Second))
 	}
 
 	select {

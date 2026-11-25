@@ -106,6 +106,19 @@ type InjectConfig struct {
 	Interval float64 `json:"interval"`
 	// IntervalUnits scales Interval: "s" (default) | "min" | "hr" | "day"
 	IntervalUnits string `json:"intervalUnits"`
+	// Props is Node-RED's modern property list — each entry sets one
+	// message property: "payload" and "topic" are the well-known ones;
+	// anything else lands in Metadata. When a "payload" prop exists it
+	// takes precedence over the legacy Payload/PayloadType fields.
+	Props []InjectProp `json:"props"`
+}
+
+// InjectProp is one entry of Node-RED's inject props array:
+// {"p":"payload","v":"Hello","vt":"str"}.
+type InjectProp struct {
+	P  string `json:"p"`  // property name ("payload", "topic", or custom)
+	V  string `json:"v"`  // literal value (per VT)
+	VT string `json:"vt"` // value type: str|num|bool|json|env|date|bin|msg|flow|global|jsonata
 }
 
 // InjectNode is a trigger that fires a configured payload once on
@@ -123,6 +136,8 @@ type InjectNode struct {
 	payload         nodestore.MessageInterface // pre-parsed payload template
 	payloadType     string
 	payloadTemplate string
+	propMetadata    map[string]interface{} // extra props entries → metadata
+	topic           string                 // resolved topic (config or props)
 }
 
 // buildPayload materializes the message Data per the configured
@@ -151,8 +166,11 @@ func (n *InjectNode) buildPayload() nodestore.MessageInterface {
 		}
 	}
 	metadata := map[string]interface{}{"origin": "inject"}
-	if n.config.Topic != "" {
-		metadata["topic"] = n.config.Topic
+	if n.topic != "" {
+		metadata["topic"] = n.topic
+	}
+	for k, v := range n.propMetadata {
+		metadata[k] = v
 	}
 	return nodestore.NewMessage().SetPayload(data).SetMetadata(metadata).SetTimestamp(time.Now())
 }
@@ -173,6 +191,25 @@ func NewInjectNode(node nodestore.NodeInterface, config *InjectConfig, host node
 func (n *InjectNode) Execute(ctx context.Context, input nodestore.MessageInterface) (nodestore.MessageInterface, error) {
 	n.payloadTemplate = n.config.Payload
 	n.payloadType = n.config.PayloadType
+	n.propMetadata = nil
+	n.topic = n.config.Topic
+	// Node-RED props array takes precedence over the legacy
+	// payload/payloadType/topic fields when present.
+	for _, p := range n.config.Props {
+		switch p.P {
+		case "payload":
+			n.payloadTemplate = p.V
+			n.payloadType = p.VT
+		case "topic":
+			n.topic = p.V
+		default:
+			// custom message property → metadata
+			if n.propMetadata == nil {
+				n.propMetadata = map[string]interface{}{}
+			}
+			n.propMetadata[p.P] = propValue(p.VT, p.V)
+		}
+	}
 	if n.payloadType == "" {
 		if n.payloadTemplate == "" {
 			n.payloadType = "timestamp"
@@ -225,6 +262,32 @@ func (n *InjectNode) fire() {
 	built := n.buildPayload()
 	payload := nodestore.NewMessage().SetPayload(built.GetPayload()).SetMetadata(metadata).SetTimestamp(time.Now())
 	_ = n.host.Emit(n.workflowID, n.GetID(), payload, nil)
+}
+
+// propValue coerces an InjectProp value by its vt code. Unknown or
+// unsupported types (jsonata, cred) pass through as the raw string.
+func propValue(vt, v string) interface{} {
+	switch vt {
+	case "num":
+		if f, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil {
+			return f
+		}
+		return float64(0)
+	case "bool":
+		return strings.TrimSpace(v) == "true"
+	case "json":
+		var data interface{}
+		if err := json.Unmarshal([]byte(v), &data); err == nil {
+			return data
+		}
+		return nil
+	case "env":
+		return os.Getenv(v)
+	case "date":
+		return float64(time.Now().UnixMilli())
+	default: // str, msg, flow, global, bin, jsonata, cred
+		return v
+	}
 }
 
 // intervalUnit returns the repeat-period multiplier for IntervalUnits

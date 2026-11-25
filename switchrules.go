@@ -20,8 +20,17 @@ func EvalSwitchRule(rule SwitchRule, payload nodestore.MessageInterface) bool {
 	var value interface{}
 	found := false
 	if payload != nil {
-		if m, ok := payload.GetPayload().(map[string]interface{}); ok {
+		if rule.Property == "" {
+			// Node-RED parity: "msg.payload" evaluates the payload
+			// itself — works for scalar payloads too.
+			value, found = payload.GetPayload(), true
+		} else if m, ok := payload.GetPayload().(map[string]interface{}); ok {
 			value, found = GetPath(m, rule.Property)
+		}
+		if !found {
+			// Node-RED msg.<prop> can point outside payload (topic,
+			// parts, …) — fall back to message metadata.
+			value, found = GetPath(payload.GetMetadata(), rule.Property)
 		}
 	}
 

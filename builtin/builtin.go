@@ -3,6 +3,8 @@
 package builtin
 
 import (
+	_ "github.com/dracory/nodebase/aiprovider"
+	_ "github.com/dracory/nodebase/airequest"
 	_ "github.com/dracory/nodebase/batch"
 	_ "github.com/dracory/nodebase/catch"
 	_ "github.com/dracory/nodebase/change"
