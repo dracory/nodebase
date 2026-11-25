@@ -7,6 +7,7 @@ package inject
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"sync"
@@ -314,5 +315,46 @@ func TestInjectOnceDelayString(t *testing.T) {
 	n, _ := newHostedNode(&InjectConfig{OnceDelay: "2"})
 	if got := n.onceDelay(); got != 2*time.Second {
 		t.Fatalf("expected 2s onceDelay, got %v", got)
+	}
+}
+
+// TestPropsLegacyFallback ? Node-RED migrated flows carry props entries
+// without a v key ({"p":"payload"} / {"p":"topic","vt":"str"}); the runtime
+// then falls back to the legacy top-level payload/payloadType/topic fields.
+// An explicit empty v still wins over the legacy field.
+func TestPropsLegacyFallback(t *testing.T) {
+	raw := `{"topic":"Fruits","payload":"[1]","payloadType":"json","props":[{"p":"payload"},{"p":"topic","vt":"str"}]}`
+	cfg := new(InjectConfig)
+	if err := json.Unmarshal([]byte(raw), cfg); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	n := NewInjectNode(nodestore.NewNode("n", "inject").SetWorkflowID("wf"), cfg, nil)
+	if _, err := n.Execute(context.Background(), nodestore.NewMessage()); err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	msg := n.buildPayload()
+	if got := msg.GetMetadata()["topic"]; got != "Fruits" {
+		t.Fatalf("topic should fall back to the legacy field, got %v", got)
+	}
+	payload, _ := msg.GetPayload().([]interface{})
+	if len(payload) != 1 {
+		t.Fatalf("payload should fall back to the legacy json field, got %v", msg.GetPayload())
+	}
+}
+
+// TestPropsExplicitEmptyWins ? a props entry with an explicit (empty) v
+// overrides the legacy top-level field rather than falling back to it.
+func TestPropsExplicitEmptyWins(t *testing.T) {
+	raw := `{"topic":"Fruits","payload":"x","payloadType":"str","props":[{"p":"topic","v":"","vt":"str"}]}`
+	cfg := new(InjectConfig)
+	if err := json.Unmarshal([]byte(raw), cfg); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	n := NewInjectNode(nodestore.NewNode("n", "inject").SetWorkflowID("wf"), cfg, nil)
+	if _, err := n.Execute(context.Background(), nodestore.NewMessage()); err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if got := n.buildPayload().GetMetadata()["topic"]; got != nil {
+		t.Fatalf("explicit empty topic should win over legacy, got %v", got)
 	}
 }

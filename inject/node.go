@@ -221,6 +221,29 @@ type InjectProp struct {
 	P  string `json:"p"`  // property name ("payload", "topic", or custom)
 	V  string `json:"v"`  // literal value (per VT)
 	VT string `json:"vt"` // value type: str|num|bool|json|env|date|bin|msg|flow|global|jsonata
+	// HasV records whether the v key was present in the JSON document.
+	// Node-RED's migrated flows carry entries without v
+	// ({"p":"payload"} / {"p":"topic","vt":"str"}) meaning "use the
+	// legacy top-level payload/payloadType/topic fields" — an absent
+	// v must be distinguishable from an explicit empty one.
+	HasV bool `json:"-"`
+}
+
+// UnmarshalJSON decodes the entry and records the presence of the v
+// key for the legacy-fallback semantics documented on InjectProp.
+func (p *InjectProp) UnmarshalJSON(data []byte) error {
+	type alias InjectProp
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	*p = InjectProp(a)
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	_, p.HasV = raw["v"]
+	return nil
 }
 
 // InjectNode is a trigger that fires a configured payload once on
@@ -321,14 +344,20 @@ func (n *InjectNode) Execute(ctx context.Context, input nodestore.MessageInterfa
 	n.propMetadata = nil
 	n.topic = n.config.Topic
 	// Node-RED props array takes precedence over the legacy
-	// payload/payloadType/topic fields when present.
+	// payload/payloadType/topic fields when present. An entry without
+	// a v key means "use the legacy top-level field" — Node-RED writes
+	// props this way for migrated pre-props flows.
 	for _, p := range n.config.Props {
 		switch p.P {
 		case "payload":
-			n.payloadTemplate = p.V
-			n.payloadType = p.VT
+			if p.HasV {
+				n.payloadTemplate = p.V
+				n.payloadType = p.VT
+			}
 		case "topic":
-			n.topic = p.V
+			if p.HasV {
+				n.topic = p.V
+			}
 		default:
 			// custom message property → metadata
 			if n.propMetadata == nil {
