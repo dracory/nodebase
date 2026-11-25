@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/dracory/nodebase"
@@ -29,9 +30,9 @@ func factory(n nodestore.NodeInterface, e nodebase.NodeHost) (nodebase.NodeExecu
 // translateNRRules rewrites c.Rules when they arrived in Node-RED's
 // serialization ({t:"set",p:"payload.x",pt:"msg",to:"1",tot:"num"})
 // instead of the native {op,field,value} shape. Supported: set/delete/
-// move with str/num/json/bool/msg values. Env vars, JSONata, regex
-// replace and flow/global context have no native equivalent and fail
-// loudly at deploy.
+// move/change with str/num/json/bool/msg values. Env vars, JSONata and
+// flow/global context have no native equivalent and fail loudly at
+// deploy.
 func translateNRRules(n nodestore.NodeInterface, c *ChangeConfig) error {
 	raw, ok := n.GetData()["rules"].([]interface{})
 	if !ok {
@@ -83,7 +84,14 @@ func translateNRRules(n nodestore.NodeInterface, c *ChangeConfig) error {
 			}
 			translated = append(translated, ChangeRule{Op: "move", Field: field, Value: nrField(to, "msg")})
 		case "change":
-			return fmt.Errorf("change: rule %d uses regex change — not supported", i)
+			from, _ := m["from"].(string)
+			to, _ := m["to"].(string)
+			fromt, _ := m["fromt"].(string)
+			pattern, err := nrPattern(from, fromt)
+			if err != nil {
+				return fmt.Errorf("change: rule %d %w", i, err)
+			}
+			translated = append(translated, ChangeRule{Op: "replace", Field: field, Pattern: pattern, Replacement: to})
 		default:
 			if t != "" {
 				return fmt.Errorf("change: rule %d has unknown Node-RED type %q", i, t)
@@ -92,6 +100,45 @@ func translateNRRules(n nodestore.NodeInterface, c *ChangeConfig) error {
 	}
 	c.Rules = translated
 	return nil
+}
+
+// nrPattern converts a Node-RED change-rule "from" expression into a
+// Go regexp pattern. The value may arrive wrapped as /pattern/flags
+// (e.g. /foo/i); supported flags map onto Go inline flags. A "fromt"
+// of "str" means a literal string rather than a regex; "re"/"" are
+// regular expressions. Anything else is rejected.
+func nrPattern(from, fromt string) (string, error) {
+	switch fromt {
+	case "", "re":
+	case "str":
+		return regexp.QuoteMeta(from), nil
+	default:
+		return "", fmt.Errorf("uses Node-RED search type %q — not supported", fromt)
+	}
+	if len(from) > 1 && from[0] == '/' {
+		if i := strings.LastIndex(from[1:], "/"); i >= 0 {
+			pattern, flags := from[1:1+i], from[1+i+1:]
+			var goFlags string
+			for _, f := range flags {
+				switch f {
+				case 'i':
+					goFlags += "i"
+				case 'm':
+					goFlags += "m"
+				case 's':
+					goFlags += "s"
+				case 'g': // always replace-all; flag is implicit
+				default:
+					return "", fmt.Errorf("uses Node-RED regex flag %q — not supported", string(f))
+				}
+			}
+			if goFlags != "" {
+				return "(?" + goFlags + ")" + pattern, nil
+			}
+			return pattern, nil
+		}
+	}
+	return from, nil
 }
 
 // nrField maps a Node-RED rule target (p + pt) onto the native field
@@ -143,7 +190,7 @@ var schema = map[string]interface{}{
 				"properties": map[string]interface{}{
 					"op": map[string]interface{}{
 						"type": "string",
-						"enum": []string{"set", "delete", "move"},
+						"enum": []string{"set", "delete", "move", "replace"},
 					},
 					"field": map[string]string{
 						"type":  "string",
@@ -154,6 +201,14 @@ var schema = map[string]interface{}{
 						"title":     "Value",
 						"format":    "typedinput",
 						"typeField": "valueType",
+					},
+					"pattern": map[string]string{
+						"type":  "string",
+						"title": "Pattern",
+					},
+					"replacement": map[string]string{
+						"type":  "string",
+						"title": "Replacement",
 					},
 				},
 			},
@@ -167,9 +222,15 @@ var schema = map[string]interface{}{
 // stored in Metadata — Node-RED's msg.statusCode/msg.headers
 // equivalent — and anything else is a path inside msg.Payload.
 type ChangeRule struct {
-	Op    string `json:"op"` // set | delete | move
+	Op    string `json:"op"` // set | delete | move | replace
 	Field string `json:"field"`
 	Value string `json:"value"`
+	// Pattern and Replacement drive the "replace" op: the field value
+	// is stringified, regexp.ReplaceAllString(Pattern, Replacement) is
+	// applied ($1/${name} backrefs supported), and the result is
+	// written back — Node-RED's t:"change" rule.
+	Pattern     string `json:"pattern,omitempty"`
+	Replacement string `json:"replacement,omitempty"`
 	// ValueType is Node-RED's tot: how Value is interpreted for "set"
 	// — "str" (default), "num", "bool", "json", or "msg" (read the
 	// value from a message property path, same as FromField).
@@ -220,6 +281,8 @@ func (n *ChangeNode) Execute(ctx context.Context, input nodestore.MessageInterfa
 			}
 		case "move":
 			n.applyMove(input, rule)
+		case "replace":
+			n.applyReplace(input, rule)
 		}
 	}
 	return input, nil
@@ -345,4 +408,61 @@ func (n *ChangeNode) applyMove(input nodestore.MessageInterface, rule ChangeRule
 		input.SetPayload(m2)
 	}
 	nodebase.SetPath(m2, dst, value)
+}
+
+// applyReplace handles the "replace" op: reads the current field value
+// (non-strings are stringified with %v), applies Pattern via
+// regexp.ReplaceAllString with Replacement ($1/${name} backrefs), and
+// writes the result back. An invalid pattern or a missing field skips
+// the rule, matching the failing-rule convention.
+func (n *ChangeNode) applyReplace(input nodestore.MessageInterface, rule ChangeRule) {
+	re, err := regexp.Compile(rule.Pattern)
+	if err != nil {
+		return
+	}
+
+	var current interface{}
+	if rule.Field == "" || rule.Field == "payload" {
+		current = input.GetPayload()
+	} else if path, ok := nodebase.MsgPath(rule.Field); ok {
+		v, found := nodebase.GetPath(input.GetMetadata(), path)
+		if !found {
+			return
+		}
+		current = v
+	} else {
+		m, ok := input.GetPayload().(map[string]interface{})
+		if !ok {
+			return
+		}
+		v, found := nodebase.GetPath(m, rule.Field)
+		if !found {
+			return
+		}
+		current = v
+	}
+
+	str, ok := current.(string)
+	if !ok {
+		str = fmt.Sprintf("%v", current)
+	}
+	replaced := re.ReplaceAllString(str, rule.Replacement)
+
+	if rule.Field == "" || rule.Field == "payload" {
+		input.SetPayload(replaced)
+		return
+	}
+	if path, ok := nodebase.MsgPath(rule.Field); ok {
+		if input.GetMetadata() == nil {
+			input.SetMetadata(map[string]interface{}{})
+		}
+		nodebase.SetPath(input.GetMetadata(), path, replaced)
+		return
+	}
+	m, ok := input.GetPayload().(map[string]interface{})
+	if !ok {
+		m = map[string]interface{}{}
+		input.SetPayload(m)
+	}
+	nodebase.SetPath(m, rule.Field, replaced)
 }

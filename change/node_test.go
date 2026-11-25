@@ -146,6 +146,119 @@ func TestChangeMoveNoops(t *testing.T) {
 	}
 }
 
+func TestChangeReplace(t *testing.T) {
+	msg := nodestore.NewMessage().SetPayload(map[string]interface{}{
+		"name": "hello world",
+	})
+	msg = run(t, &ChangeConfig{Rules: []ChangeRule{
+		{Op: "replace", Field: "name", Pattern: "world", Replacement: "there"},
+	}}, msg)
+	if got := msg.GetPayload().(map[string]interface{})["name"]; got != "hello there" {
+		t.Fatalf("replace wrong: %v", msg.GetPayload())
+	}
+}
+
+// Capture-group backrefs ($1) in the replacement follow
+// regexp.ReplaceAllString semantics.
+func TestChangeReplaceBackrefs(t *testing.T) {
+	msg := nodestore.NewMessage().SetPayload(map[string]interface{}{
+		"full": "Doe, John",
+	})
+	msg = run(t, &ChangeConfig{Rules: []ChangeRule{
+		{Op: "replace", Field: "full", Pattern: `(\w+), (\w+)`, Replacement: "$2 $1"},
+	}}, msg)
+	if got := msg.GetPayload().(map[string]interface{})["full"]; got != "John Doe" {
+		t.Fatalf("backref replace wrong: %v", msg.GetPayload())
+	}
+}
+
+// Non-string targets behave like set: the value is stringified,
+// replaced, and written back as a string.
+func TestChangeReplaceNonString(t *testing.T) {
+	msg := nodestore.NewMessage().SetPayload(map[string]interface{}{
+		"n": 12345,
+	})
+	msg = run(t, &ChangeConfig{Rules: []ChangeRule{
+		{Op: "replace", Field: "n", Pattern: "3", Replacement: "X"},
+	}}, msg)
+	if got := msg.GetPayload().(map[string]interface{})["n"]; got != "12X45" {
+		t.Fatalf("non-string replace wrong: %v", msg.GetPayload())
+	}
+}
+
+func TestChangeReplaceMetadataAndSkips(t *testing.T) {
+	msg := nodestore.NewMessage().
+		SetMetadata(map[string]interface{}{"topic": "a.b.c"}).
+		SetPayload(map[string]interface{}{"x": "y"})
+	msg = run(t, &ChangeConfig{Rules: []ChangeRule{
+		{Op: "replace", Field: "msg.topic", Pattern: `\.`, Replacement: "-"},
+		{Op: "replace", Field: "missing", Pattern: "z", Replacement: "w"},
+		{Op: "replace", Field: "x", Pattern: "[invalid(", Replacement: "w"},
+	}}, msg)
+	if got := msg.GetMetadata()["topic"]; got != "a-b-c" {
+		t.Fatalf("metadata replace wrong: %v", msg.GetMetadata())
+	}
+	if got := msg.GetPayload().(map[string]interface{})["x"]; got != "y" {
+		t.Fatalf("invalid pattern should be skipped: %v", msg.GetPayload())
+	}
+}
+
+// Node-RED's t:"change" rule shape (from, to, fromt, /pattern/flags)
+// translates onto the native replace op via translateNRRules.
+func TestTranslateNRChangeRule(t *testing.T) {
+	n := nodestore.NewNode("c1", "change")
+	n.SetData(map[string]interface{}{
+		"rules": []interface{}{
+			map[string]interface{}{
+				"t": "change", "p": "payload.name", "pt": "msg",
+				"from": "/(foo)+/i", "to": "[$1]", "fromt": "re",
+			},
+		},
+	})
+	c := new(ChangeConfig)
+	if err := translateNRRules(n, c); err != nil {
+		t.Fatalf("translate failed: %v", err)
+	}
+	if len(c.Rules) != 1 {
+		t.Fatalf("expected 1 rule, got %v", c.Rules)
+	}
+	r := c.Rules[0]
+	if r.Op != "replace" || r.Field != "name" || r.Pattern != "(?i)(foo)+" || r.Replacement != "[$1]" {
+		t.Fatalf("translated rule wrong: %+v", r)
+	}
+
+	// The translated rule executes: /(foo)+/i on "FOOfooX" -> "[$1]"
+	// where $1 is the last capture-group iteration.
+	msg := run(t, c, nodestore.NewMessage().SetPayload(map[string]interface{}{"name": "FOOfooX"}))
+	if got := msg.GetPayload().(map[string]interface{})["name"]; got != "[foo]X" {
+		t.Fatalf("executed replace wrong: %v", msg.GetPayload())
+	}
+}
+
+// nrPattern conversions: /flags wrapper, literal "str" search, and
+// rejection of unsupported search types/flags.
+func TestNRPattern(t *testing.T) {
+	cases := []struct{ from, fromt, want string }{
+		{"abc", "", "abc"},
+		{"/foo/i", "re", "(?i)foo"},
+		{"/a.c/ms", "re", "(?ms)a.c"},
+		{"/a/g", "re", "a"},
+		{"a.c", "str", `a\.c`},
+	}
+	for _, c := range cases {
+		got, err := nrPattern(c.from, c.fromt)
+		if err != nil || got != c.want {
+			t.Fatalf("nrPattern(%q,%q)=(%q,%v) want (%q,nil)", c.from, c.fromt, got, err, c.want)
+		}
+	}
+	if _, err := nrPattern("x", "env"); err == nil {
+		t.Fatal("fromt env should fail")
+	}
+	if _, err := nrPattern("/x/u", "re"); err == nil {
+		t.Fatal("unsupported flag should fail")
+	}
+}
+
 func TestChangeMoveToMetadata(t *testing.T) {
 	msg := nodestore.NewMessage().SetPayload(map[string]interface{}{"tok": "s3"})
 	msg = run(t, &ChangeConfig{Rules: []ChangeRule{
