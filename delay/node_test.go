@@ -18,10 +18,17 @@ import (
 
 // fakeHost implements nodebase.NodeHost with a state slot and an
 // emitted-message capture for the timed rate-limiter releases.
+// emitRecord pairs an emitted message with the ports it was sent on
+// (nil = all outgoing edges).
+type emitRecord struct {
+	msg   nodestore.MessageInterface
+	ports []string
+}
+
 type fakeHost struct {
 	mu      sync.Mutex // guards states and emitted — timer goroutines emit
 	states  map[string]interface{}
-	emitted []nodestore.MessageInterface
+	emitted []emitRecord
 }
 
 func newFakeHost() *fakeHost { return &fakeHost{states: map[string]interface{}{}} }
@@ -29,13 +36,22 @@ func newFakeHost() *fakeHost { return &fakeHost{states: map[string]interface{}{}
 func (h *fakeHost) Emit(wf, nodeID string, p nodestore.MessageInterface, ports []string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.emitted = append(h.emitted, p)
+	h.emitted = append(h.emitted, emitRecord{msg: p, ports: ports})
 	return nil
 }
 func (h *fakeHost) emittedMsgs() []nodestore.MessageInterface {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return append([]nodestore.MessageInterface(nil), h.emitted...)
+	out := make([]nodestore.MessageInterface, 0, len(h.emitted))
+	for _, e := range h.emitted {
+		out = append(out, e.msg)
+	}
+	return out
+}
+func (h *fakeHost) emittedRecs() []emitRecord {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]emitRecord(nil), h.emitted...)
 }
 func (h *fakeHost) EmitEvent(wf, nodeID, name, level, message string) {}
 func (h *fakeHost) InjectMessage(wf, from string, p nodestore.MessageInterface) (string, chan nodestore.MessageInterface, error) {
@@ -317,6 +333,81 @@ func TestRateLimitToFront(t *testing.T) {
 	waitFor(t, func() bool { return len(host.emittedMsgs()) == 1 }, "toFront release")
 	if got := host.emittedMsgs()[0].GetPayload(); got != "vip" {
 		t.Fatalf("toFront should release first, got %v", got)
+	}
+}
+
+func TestDelayUnitDays(t *testing.T) {
+	// Node-RED accepts "days" for delay units and "day" for rate
+	// units — both spellings resolve to 24 hours.
+	for _, u := range []string{"day", "days", "DAYS"} {
+		if d := delayUnit(u); d != 24*time.Hour {
+			t.Fatalf("delayUnit(%q) = %v, want 24h", u, d)
+		}
+	}
+}
+
+func TestRateLimitDroppedToOutput2(t *testing.T) {
+	// outputs:2 turns on Node-RED's burst behaviour — a message
+	// displaced by a newer arrival in drop mode is emitted on
+	// output_2 instead of being discarded, while paced releases
+	// stay on output_1.
+	n, host := newNode(&DelayConfig{
+		PauseType: "rate", Rate: 1, NbRateUnits: 60, RateUnits: "milliseconds",
+		Drop: true, Outputs: 2,
+	})
+	ctx := context.Background()
+	if out, _ := n.Execute(ctx, nodestore.NewMessage().SetPayload("1")); out == nil {
+		t.Fatal("first message should pass immediately")
+	}
+	n.Execute(ctx, nodestore.NewMessage().SetPayload("2")) // kept as latest
+	n.Execute(ctx, nodestore.NewMessage().SetPayload("3")) // displaces "2"
+	waitFor(t, func() bool { return len(host.emittedRecs()) == 1 }, "dropped emit")
+	rec := host.emittedRecs()[0]
+	if rec.msg.GetPayload() != "2" || len(rec.ports) != 1 || rec.ports[0] != "output_2" {
+		t.Fatalf("displaced message should emit on output_2, got payload=%v ports=%v",
+			rec.msg.GetPayload(), rec.ports)
+	}
+	waitFor(t, func() bool { return len(host.emittedRecs()) == 2 }, "paced release")
+	rec = host.emittedRecs()[1]
+	if rec.msg.GetPayload() != "3" || len(rec.ports) != 1 || rec.ports[0] != "output_1" {
+		t.Fatalf("paced release should emit on output_1, got payload=%v ports=%v",
+			rec.msg.GetPayload(), rec.ports)
+	}
+}
+
+func TestRateLimitDroppedDiscardedWithoutOutput2(t *testing.T) {
+	// Without the second output a displaced message is discarded —
+	// nothing is emitted for it.
+	n, host := newNode(&DelayConfig{
+		PauseType: "rate", Rate: 1, NbRateUnits: 40, RateUnits: "milliseconds", Drop: true,
+	})
+	ctx := context.Background()
+	n.Execute(ctx, nodestore.NewMessage().SetPayload("1"))
+	n.Execute(ctx, nodestore.NewMessage().SetPayload("2"))
+	n.Execute(ctx, nodestore.NewMessage().SetPayload("3"))
+	waitFor(t, func() bool { return len(host.emittedRecs()) == 1 }, "latest release")
+	if rec := host.emittedRecs()[0]; rec.msg.GetPayload() != "3" {
+		t.Fatalf("only the latest should release, got %v", rec.msg.GetPayload())
+	}
+}
+
+func TestRateLimitDroppedToOutput2TopicMode(t *testing.T) {
+	// Per-topic mode: a queued message replaced by a newer arrival on
+	// the same topic emits on output_2 (Node-RED parity).
+	n, host := newNode(&DelayConfig{
+		PauseType: "rate", Rate: 1, NbRateUnits: 60, RateUnits: "milliseconds",
+		RateType: "topic", Outputs: 2,
+	})
+	ctx := context.Background()
+	meta := map[string]interface{}{"topic": "a"}
+	n.Execute(ctx, nodestore.NewMessage().SetPayload("a1").SetMetadata(meta))
+	n.Execute(ctx, nodestore.NewMessage().SetPayload("a2").SetMetadata(meta))
+	n.Execute(ctx, nodestore.NewMessage().SetPayload("a3").SetMetadata(meta))
+	waitFor(t, func() bool { return len(host.emittedRecs()) == 1 }, "dropped emit")
+	rec := host.emittedRecs()[0]
+	if rec.msg.GetPayload() != "a2" || len(rec.ports) != 1 || rec.ports[0] != "output_2" {
+		t.Fatalf("replaced topic message should emit on output_2, got payload=%v ports=%v",
+			rec.msg.GetPayload(), rec.ports)
 	}
 }
 

@@ -46,12 +46,12 @@ var schema = map[string]interface{}{
 		"filename": map[string]string{
 			"type":        "string",
 			"title":       "Filename",
-			"description": "Target file path; with filenameType \"msg\" the message's filename property is used instead",
+			"description": "Target file path; with filenameType \"msg\" the message's filename property is used instead, with \"flow\"/\"global\" the value is read from that context scope",
 		},
 		"filenameType": map[string]interface{}{
 			"type":    "string",
 			"title":   "Filename Source",
-			"enum":    []string{"fixed", "msg"},
+			"enum":    []string{"fixed", "msg", "flow", "global"},
 			"default": "fixed",
 		},
 		"appendNewline": map[string]interface{}{
@@ -116,7 +116,7 @@ type FileNode struct {
 // Execute writes the payload to the resolved filename and returns the
 // input message with Metadata["filename"] set.
 func (n *FileNode) Execute(ctx context.Context, input nodestore.MessageInterface) (nodestore.MessageInterface, error) {
-	filename, err := nodebase.FileFilename(n.config.Filename, n.config.FilenameType, input, n.host)
+	filename, err := nodebase.FileFilename(n.config.Filename, n.config.FilenameType, input, n.host, n.GetWorkflowID())
 	if err != nil {
 		return nil, err
 	}

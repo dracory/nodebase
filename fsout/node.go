@@ -51,12 +51,12 @@ var schema = map[string]interface{}{
 		"filename": map[string]interface{}{
 			"type":        "string",
 			"title":       "Filename",
-			"description": "Base name to write; with filenameType \"msg\" the message's filename property is used (reduced to its base name)",
+			"description": "Base name to write; with filenameType \"msg\" the message's filename property is used, with \"flow\"/\"global\" the value is read from that context scope (message/context names are reduced to their base name)",
 		},
 		"filenameType": map[string]interface{}{
 			"type":    "string",
 			"title":   "Filename Source",
-			"enum":    []string{"fixed", "msg"},
+			"enum":    []string{"fixed", "msg", "flow", "global"},
 			"default": "fixed",
 		},
 		"appendNewline": map[string]interface{}{
@@ -156,13 +156,9 @@ type FsOutNode struct {
 // Execute resolves the target, writes via tmp+rename, and stamps the
 // resolved locator path into Metadata["filename"].
 func (n *FsOutNode) Execute(ctx context.Context, input nodestore.MessageInterface) (nodestore.MessageInterface, error) {
-	name := n.config.Filename
-	if n.config.FilenameType == "msg" {
-		v, ok := nodebase.LookupProperty(input, "filename")
-		if !ok {
-			return nil, fmt.Errorf("fsOut: filenameType is msg but the message has no filename property")
-		}
-		name = fmt.Sprintf("%v", v)
+	name, err := nodebase.FileFilenameValue(n.config.Filename, n.config.FilenameType, input, n.host, n.GetWorkflowID())
+	if err != nil {
+		return nil, fmt.Errorf("fsOut: %w", err)
 	}
 	name = baseName(name)
 	if name == "" {

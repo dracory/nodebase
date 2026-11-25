@@ -89,22 +89,44 @@ func EncodeFilePayload(data interface{}, encoding string) ([]byte, error) {
 	}
 }
 
-// fileFilename resolves the node's target filename. With filenameType
-// "msg" the name comes from msg.Payload["filename"] or
-// msg.Metadata["filename"] (via lookupProperty); otherwise the fixed
-// configured filename is used. The host FileRoot restriction applies.
-func FileFilename(configured, filenameType string, input nodestore.MessageInterface, host NodeHost) (string, error) {
-	name := configured
-	if filenameType == "msg" {
-		v, ok := LookupProperty(input, "filename")
-		if !ok {
-			return "", errors.New("filenameType is msg but the message has no filename property")
-		}
-		name = fmt.Sprintf("%v", v)
+// fileFilename resolves the node's target filename per the filename
+// source (see FileFilenameValue), then applies the host FileRoot
+// restriction. workflowID scopes "flow" context lookups; an empty
+// workflowID leaves the flow namespace unscoped.
+func FileFilename(configured, filenameType string, input nodestore.MessageInterface, host NodeHost, workflowID string) (string, error) {
+	name, err := FileFilenameValue(configured, filenameType, input, host, workflowID)
+	if err != nil {
+		return "", err
 	}
 	var root string
 	if host != nil {
 		root = host.FileRootPath()
 	}
 	return ResolveFilePath(root, name)
+}
+
+// FileFilenameValue resolves the raw filename string a filename
+// typedInput produces, before any FileRoot sandboxing. "msg" reads the
+// message's filename property (via lookupProperty); "flow"/"global"
+// read the configured value as a context key through the host's
+// context store; anything else ("fixed", "", NR's "str") is the fixed
+// configured filename itself.
+func FileFilenameValue(configured, filenameType string, input nodestore.MessageInterface, host NodeHost, workflowID string) (string, error) {
+	switch filenameType {
+	case "msg":
+		v, ok := LookupProperty(input, "filename")
+		if !ok {
+			return "", errors.New("filenameType is msg but the message has no filename property")
+		}
+		return fmt.Sprintf("%v", v), nil
+	case ContextScopeFlow, ContextScopeGlobal:
+		rc := &RuleContext{Host: host, WorkflowID: workflowID}
+		v, ok := rc.ContextGet(filenameType, configured)
+		if !ok {
+			return "", fmt.Errorf("filenameType is %s but %q is not set in %s context", filenameType, configured, filenameType)
+		}
+		return fmt.Sprintf("%v", v), nil
+	default:
+		return configured, nil
+	}
 }

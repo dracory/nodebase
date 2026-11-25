@@ -73,7 +73,7 @@ var schema = map[string]interface{}{
 		"timeoutUnits": map[string]interface{}{
 			"type":    "string",
 			"title":   "Units",
-			"enum":    []string{"milliseconds", "seconds", "minutes", "hours"},
+			"enum":    []string{"milliseconds", "seconds", "minutes", "hours", "days"},
 			"default": "seconds",
 			"showIf":  map[string]string{"pauseType": "delay"},
 		},
@@ -101,7 +101,7 @@ var schema = map[string]interface{}{
 		"randomUnits": map[string]interface{}{
 			"type":    "string",
 			"title":   "Units",
-			"enum":    []string{"milliseconds", "seconds", "minutes", "hours"},
+			"enum":    []string{"milliseconds", "seconds", "minutes", "hours", "days"},
 			"default": "seconds",
 			"showIf":  map[string]string{"pauseType": "random"},
 		},
@@ -123,7 +123,7 @@ var schema = map[string]interface{}{
 		"rateUnits": map[string]interface{}{
 			"type":    "string",
 			"title":   "Rate Units",
-			"enum":    []string{"second", "minute", "hour"},
+			"enum":    []string{"second", "minute", "hour", "day"},
 			"default": "second",
 			"showIf":  map[string]string{"pauseType": "rate"},
 		},
@@ -151,6 +151,14 @@ var schema = map[string]interface{}{
 			"title":       "Allow msg.rate Override",
 			"description": "A numeric msg.rate (in ms) replaces the interval until reset",
 			"default":     false,
+			"showIf":      map[string]string{"pauseType": "rate"},
+		},
+		"outputs": map[string]interface{}{
+			"type":        "integer",
+			"title":       "Outputs",
+			"enum":        []int{1, 2},
+			"default":     1,
+			"description": "2 adds a second port that receives messages dropped by the rate limiter",
 			"showIf":      map[string]string{"pauseType": "rate"},
 		},
 	},
@@ -187,6 +195,10 @@ type DelayConfig struct {
 	Drop bool `json:"drop"`
 	// AllowRate lets a numeric msg.rate (ms) override the interval.
 	AllowRate bool `json:"allowrate"`
+	// Outputs is the node port count; 2 adds a second port that
+	// receives messages the rate limiter discards (Node-RED burst
+	// behaviour — dropped messages go to the second output).
+	Outputs int `json:"outputs"`
 	// Duration is the legacy config (milliseconds) kept so existing
 	// flows keep working; pauseType fields take precedence when set.
 	Duration int `json:"duration"`
@@ -333,7 +345,7 @@ func (n *DelayNode) releaseHeld(entry *heldMsg) {
 		}
 	}
 	state.mu.Unlock()
-	_ = n.host.Emit(n.workflowID, n.GetID(), entry.msg, nil)
+	n.emitOut(entry.msg)
 }
 
 // clearHeld drops every parked message without sending it — the
@@ -380,7 +392,7 @@ func (n *DelayNode) flushHeld(v interface{}) {
 	}
 	state.mu.Unlock()
 	for _, msg := range out {
-		_ = n.host.Emit(n.workflowID, n.GetID(), msg, nil)
+		n.emitOut(msg)
 	}
 }
 
@@ -580,10 +592,14 @@ func (n *DelayNode) limit(ctx context.Context, input nodestore.MessageInterface)
 		return input
 	}
 
-	// Window busy — the message is held for later.
+	// Window busy — the message is held for later. In keep-latest
+	// mode the previously held message is displaced; with a second
+	// output configured it is emitted there instead of discarded
+	// (Node-RED burst behaviour — send([null, msg])).
 	keepLatest := n.config.Drop || n.topicMode()
+	var dropped nodestore.MessageInterface
 	if keepLatest {
-		b.latest = input
+		dropped, b.latest = b.latest, input
 	} else if front, _ := input.GetMetadata()["toFront"].(bool); front {
 		b.queue = append([]nodestore.MessageInterface{input}, b.queue...)
 	} else {
@@ -591,7 +607,30 @@ func (n *DelayNode) limit(ctx context.Context, input nodestore.MessageInterface)
 	}
 	n.scheduleLocked(b, key, interval)
 	state.mu.Unlock()
+	if dropped != nil {
+		n.emitDropped(dropped)
+	}
 	return nil
+}
+
+// emitOut releases a paced message downstream. With a second port
+// configured (outputs:2) paced messages are pinned to output_1 so
+// they never leak onto the dropped-message port.
+func (n *DelayNode) emitOut(msg nodestore.MessageInterface) {
+	var ports []string
+	if n.config.Outputs == 2 {
+		ports = []string{"output_1"}
+	}
+	_ = n.host.Emit(n.workflowID, n.GetID(), msg, ports)
+}
+
+// emitDropped routes a message the rate limiter discards to the
+// second output — Node-RED's burst behaviour — when the node has
+// two outputs; without one it is silently discarded.
+func (n *DelayNode) emitDropped(msg nodestore.MessageInterface) {
+	if n.config.Outputs == 2 {
+		_ = n.host.Emit(n.workflowID, n.GetID(), msg, []string{"output_2"})
+	}
 }
 
 // scheduleLocked (re)arms the bucket's release timer for the pending
@@ -639,7 +678,7 @@ func (n *DelayNode) release(key string, interval time.Duration) {
 	state.mu.Unlock()
 
 	if msg != nil {
-		_ = n.host.Emit(n.workflowID, n.GetID(), msg, nil)
+		n.emitOut(msg)
 	}
 }
 
@@ -684,12 +723,12 @@ func (n *DelayNode) flushBuckets(v interface{}) {
 	state.mu.Unlock()
 
 	for _, msg := range out {
-		_ = n.host.Emit(n.workflowID, n.GetID(), msg, nil)
+		n.emitOut(msg)
 	}
 }
 
 // delayUnit maps a unit name to a duration. Accepts the Node-RED
-// spellings (seconds/minute/…) and short aliases (s/min/hr/ms).
+// spellings (seconds/minute/day…) and short aliases (s/min/hr/d/ms).
 func delayUnit(units string) time.Duration {
 	switch strings.ToLower(strings.TrimSpace(units)) {
 	case "s", "sec", "second", "seconds":
@@ -698,10 +737,11 @@ func delayUnit(units string) time.Duration {
 		return time.Minute
 	case "hr", "hour", "hours":
 		return time.Hour
+	case "d", "day", "days":
+		return 24 * time.Hour
 	case "", "ms", "millisecond", "milliseconds":
 		return time.Millisecond
 	default:
 		return time.Second
 	}
 }
-

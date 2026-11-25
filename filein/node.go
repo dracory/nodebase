@@ -48,12 +48,12 @@ var schema = map[string]interface{}{
 		"filename": map[string]string{
 			"type":        "string",
 			"title":       "Filename",
-			"description": "Source file path; with filenameType \"msg\" the message's filename property is used instead",
+			"description": "Source file path; with filenameType \"msg\" the message's filename property is used instead, with \"flow\"/\"global\" the value is read from that context scope",
 		},
 		"filenameType": map[string]interface{}{
 			"type":    "string",
 			"title":   "Filename Source",
-			"enum":    []string{"fixed", "msg"},
+			"enum":    []string{"fixed", "msg", "flow", "global"},
 			"default": "fixed",
 		},
 		"format": map[string]interface{}{
@@ -114,7 +114,7 @@ type FileInNode struct {
 // Execute reads the resolved file. For single-message formats the content
 // lands in Data directly; for "lines"/"stream" it is stashed for Expand.
 func (n *FileInNode) Execute(ctx context.Context, input nodestore.MessageInterface) (nodestore.MessageInterface, error) {
-	filename, err := nodebase.FileFilename(n.config.Filename, n.config.FilenameType, input, n.host)
+	filename, err := nodebase.FileFilename(n.config.Filename, n.config.FilenameType, input, n.host, n.GetWorkflowID())
 	if err != nil {
 		return nil, err
 	}

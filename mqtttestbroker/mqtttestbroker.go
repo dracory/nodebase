@@ -77,6 +77,10 @@ type Broker struct {
 type PublishedMessage struct {
 	Topic   string
 	Payload []byte
+	// QoS and Retain are the flags the publisher sent on the wire —
+	// recorded so tests can assert what the client side published.
+	QoS    byte
+	Retain bool
 }
 
 // Start runs a plaintext broker on a random loopback port.
@@ -199,7 +203,12 @@ func (b *Broker) handle(conn net.Conn) {
 				_ = writePacket(conn, pktPUBACK, 0, []byte{byte(packetID >> 8), byte(packetID)})
 			}
 			b.mu.Lock()
-			b.Published = append(b.Published, PublishedMessage{Topic: topic, Payload: payload})
+			b.Published = append(b.Published, PublishedMessage{
+				Topic:   topic,
+				Payload: payload,
+				QoS:     qos,
+				Retain:  flags&0x01 != 0,
+			})
 			b.mu.Unlock()
 			b.broadcast(topic, payload)
 		case pktPINGREQ:

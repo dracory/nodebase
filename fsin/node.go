@@ -262,6 +262,11 @@ func (n *FsInNode) emitFile(fullPath string, e nodebase.FsEntry) {
 	n.mu.Lock()
 	fsys := n.fs
 	n.mu.Unlock()
+	if fsys == nil {
+		// Stop() may close and nil the fs while a poll is in flight —
+		// bail instead of dereferencing the closed handle.
+		return
+	}
 	payload := nodestore.NewMessage().SetMetadata(map[string]interface{}{
 		"filename": fullPath,
 		"filesize": e.Size,

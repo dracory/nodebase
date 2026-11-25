@@ -174,17 +174,44 @@ func TestEncodeFilePayload(t *testing.T) {
 
 func TestFileFilename(t *testing.T) {
 	// fixed name
-	got, err := FileFilename("some/file.txt", "fixed", nil, nil)
+	got, err := FileFilename("some/file.txt", "fixed", nil, nil, "")
 	if err != nil || got == "" {
 		t.Fatalf("fixed filename failed: %v", err)
 	}
 	// msg filename
 	msg := nodestore.NewMessage().SetMetadata(map[string]interface{}{"filename": "frommsg.txt"})
-	got, err = FileFilename("", "msg", msg, nil)
+	got, err = FileFilename("", "msg", msg, nil, "")
 	if err != nil || got != "frommsg.txt" {
 		t.Fatalf("msg filename wrong: %q", got)
 	}
-	if _, err := FileFilename("", "msg", nil, nil); err == nil {
+	if _, err := FileFilename("", "msg", nil, nil, ""); err == nil {
 		t.Fatal("missing msg filename should error")
+	}
+}
+
+func TestFileFilenameContext(t *testing.T) {
+	// flow/global filename types read the configured value as a
+	// context key through the host's context store.
+	store := NewMemoryContextStore()
+	if err := store.SetContext(ContextScopeFlow, "wf1", "src", "/tmp/flow.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetContext(ContextScopeGlobal, "", "src", "/tmp/global.txt"); err != nil {
+		t.Fatal(err)
+	}
+	h := &stubHost{store: store}
+	got, err := FileFilename("src", "flow", nil, h, "wf1")
+	if err != nil || got != "/tmp/flow.txt" {
+		t.Fatalf("flow filename wrong: %q, %v", got, err)
+	}
+	got, err = FileFilename("src", "global", nil, h, "wf1")
+	if err != nil || got != "/tmp/global.txt" {
+		t.Fatalf("global filename wrong: %q, %v", got, err)
+	}
+	if _, err := FileFilename("missing", "flow", nil, h, "wf1"); err == nil {
+		t.Fatal("missing context key should error")
+	}
+	if _, err := FileFilename("src", "global", nil, nil, "wf1"); err == nil {
+		t.Fatal("context filename without a host store should error")
 	}
 }

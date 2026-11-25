@@ -249,8 +249,9 @@ func (n *MQTTInNode) onMessage(_ mqtt.Client, msg mqtt.Message) {
 		data = string(msg.Payload())
 	}
 	_ = n.host.Emit(n.workflowID, n.GetID(), nodestore.NewMessage().SetPayload(data).SetMetadata(map[string]interface{}{
-		"topic": msg.Topic(),
-		"qos":   int(msg.Qos()),
+		"topic":  msg.Topic(),
+		"qos":    int(msg.Qos()),
+		"retain": msg.Retained(),
 	}).SetTimestamp(time.Now()), nil)
 }
 

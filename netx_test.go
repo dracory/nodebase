@@ -15,7 +15,8 @@ import (
 // stubHost is the minimal NodeHost for root-package seam tests —
 // shared by netx_test.go, tls_test.go and queue_test.go.
 type stubHost struct {
-	env map[string]interface{}
+	env   map[string]interface{}
+	store ContextStore
 }
 
 func (h *stubHost) Emit(wf, nodeID string, p nodestore.MessageInterface, ports []string) error {
@@ -41,7 +42,7 @@ func (h *stubHost) NodeEnv(wf, nodeID, name string) (interface{}, bool) {
 	v, ok := h.env[name]
 	return v, ok
 }
-func (h *stubHost) ResolvedContextStore() ContextStore                 { return nil }
+func (h *stubHost) ResolvedContextStore() ContextStore                 { return h.store }
 func (h *stubHost) LoadTLSConfig(wf, ref string) (*tls.Config, error)  { return nil, nil }
 func (h *stubHost) FileRootPath() string                               { return "" }
 func (h *stubHost) ExecAllowed() bool                                  { return false }

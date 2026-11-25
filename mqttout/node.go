@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/dracory/nodebase"
 	nodestore "github.com/dracory/nodestore"
+	"github.com/spf13/cast"
 	"strings"
 	"time"
 )
@@ -129,15 +130,17 @@ var schema = map[string]interface{}{
 			"description": "Publish topic; when blank the message's topic metadata is used instead",
 		},
 		"qos": map[string]interface{}{
-			"type":    "integer",
-			"title":   "QoS",
-			"enum":    []int{0, 1, 2},
-			"default": 0,
+			"type":        "integer",
+			"title":       "QoS",
+			"enum":        []int{0, 1, 2},
+			"default":     0,
+			"description": "Publish QoS; when blank the message's qos metadata is used instead",
 		},
 		"retain": map[string]interface{}{
-			"type":    "boolean",
-			"title":   "Retain",
-			"default": false,
+			"type":        "boolean",
+			"title":       "Retain",
+			"default":     false,
+			"description": "Retain flag; when blank the message's retain metadata is used instead",
 		},
 		"username": map[string]interface{}{
 			"type":        "string",
@@ -163,10 +166,13 @@ type MQTTOutConfig struct {
 	nodebase.MQTTConnConfig
 	// Topic is the publish topic; when blank the message's topic metadata is used (Node-RED precedence).
 	Topic string `json:"topic"`
-	// QoS is the publish quality of service (0|1|2).
-	QoS int `json:"qos"`
-	// Retain sets the MQTT retain flag on published messages.
-	Retain bool `json:"retain"`
+	// QoS is the publish quality of service (0|1|2). A nil pointer
+	// marks a blank config — Node-RED serializes blank qos as "" and
+	// msg.qos is the fallback — so it stays distinct from explicit 0.
+	QoS *int `json:"qos"`
+	// Retain sets the MQTT retain flag on published messages. Nil
+	// means the config was blank ("") and msg.retain is the fallback.
+	Retain *bool `json:"retain"`
 }
 
 // MQTTOutNode publishes the message Data to a broker topic and passes
@@ -194,6 +200,42 @@ func publishTopic(configTopic string, input nodestore.MessageInterface) string {
 	return ""
 }
 
+// publishQoS resolves the publish QoS with the same Node-RED
+// precedence as publishTopic: a configured qos wins; msg.qos metadata
+// is only the fallback when the config is blank (nil — Node-RED
+// serializes blank qos as ""). Defaults to 0 when neither is set.
+func publishQoS(configQoS *int, input nodestore.MessageInterface) int {
+	if configQoS != nil {
+		return nodebase.ClampQoS(*configQoS)
+	}
+	if input != nil {
+		if v, ok := input.GetMetadata()["qos"]; ok {
+			if f, ok := nodebase.ParseNumeric(v); ok {
+				return nodebase.ClampQoS(int(f))
+			}
+		}
+	}
+	return 0
+}
+
+// publishRetain resolves the retain flag with Node-RED precedence:
+// an explicitly configured retain (including "false") wins; msg.retain
+// metadata is only the fallback when the config is blank. Defaults to
+// false when neither is set.
+func publishRetain(configRetain *bool, input nodestore.MessageInterface) bool {
+	if configRetain != nil {
+		return *configRetain
+	}
+	if input != nil {
+		if v, ok := input.GetMetadata()["retain"]; ok {
+			if b, err := cast.ToBoolE(v); err == nil {
+				return b
+			}
+		}
+	}
+	return false
+}
+
 // Execute serializes Data, publishes it and returns the input payload.
 func (n *MQTTOutNode) Execute(ctx context.Context, input nodestore.MessageInterface) (nodestore.MessageInterface, error) {
 	topic := publishTopic(n.config.Topic, input)
@@ -219,7 +261,7 @@ func (n *MQTTOutNode) Execute(ctx context.Context, input nodestore.MessageInterf
 		return nil, err
 	}
 
-	token := client.Publish(topic, byte(nodebase.ClampQoS(n.config.QoS)), n.config.Retain, payload)
+	token := client.Publish(topic, byte(publishQoS(n.config.QoS, input)), publishRetain(n.config.Retain, input), payload)
 	if !token.WaitTimeout(10 * time.Second) {
 		return nil, fmt.Errorf("mqttOut publish to %q timed out", topic)
 	}

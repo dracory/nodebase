@@ -151,3 +151,67 @@ func TestWatchValidate(t *testing.T) {
 		t.Fatal("negative interval should fail")
 	}
 }
+
+func TestWatchMultiplePaths(t *testing.T) {
+	dir1 := t.TempDir()
+	dir2 := t.TempDir()
+	host := &fakeHost{}
+	// A comma-separated Path watches every entry (Node-RED files parity).
+	n := newNode(&WatchConfig{Filename: dir1 + "," + dir2, Interval: 0.02}, host)
+	defer n.Stop()
+	out, err := n.Execute(context.Background(), nodestore.NewMessage())
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if got := len(out.GetPayload().(map[string]interface{})["paths"].([]string)); got != 2 {
+		t.Fatalf("expected 2 watched paths, got %v", out.GetPayload())
+	}
+
+	p1 := filepath.Join(dir1, "a.txt")
+	p2 := filepath.Join(dir2, "b.txt")
+	os.WriteFile(p1, []byte("x"), 0644)
+	os.WriteFile(p2, []byte("y"), 0644)
+	waitFor(t, func() bool {
+		seen := map[string]bool{}
+		for _, e := range host.emittedMsgs() {
+			if e.GetMetadata()["event"] == "added" {
+				if p, ok := e.GetPayload().(string); ok {
+					seen[p] = true
+				}
+			}
+		}
+		return seen[p1] && seen[p2]
+	}, "added events for both watched paths")
+}
+
+func TestWatchGlob(t *testing.T) {
+	dir := t.TempDir()
+	host := &fakeHost{}
+	// A glob spec expands on every poll, so files created later match.
+	n := newNode(&WatchConfig{Filename: filepath.Join(dir, "*.txt"), Interval: 0.02}, host)
+	defer n.Stop()
+	if _, err := n.Execute(context.Background(), nodestore.NewMessage()); err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+
+	txt := filepath.Join(dir, "in.txt")
+	other := filepath.Join(dir, "out.md")
+	os.WriteFile(other, []byte("m"), 0644)
+	os.WriteFile(txt, []byte("x"), 0644)
+	waitFor(t, func() bool {
+		for _, e := range host.emittedMsgs() {
+			if e.GetMetadata()["event"] == "added" && e.GetPayload() == txt {
+				return true
+			}
+		}
+		return false
+	}, "added event for the glob-matched file")
+
+	// Non-matching files must not be reported.
+	time.Sleep(120 * time.Millisecond)
+	for _, e := range host.emittedMsgs() {
+		if e.GetPayload() == other {
+			t.Fatal("glob spec reported a non-matching file")
+		}
+	}
+}

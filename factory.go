@@ -74,7 +74,16 @@ func coerceConfigStrings(data map[string]any, cfgType reflect.Type) {
 				delete(data, name)
 				continue
 			}
-			switch f.Type.Kind() {
+			// Unwrap pointer element types so optional numeric/bool
+			// fields (*int, *bool — nil marks a blank Node-RED
+			// config, distinct from explicit 0/false) coerce from
+			// their string serializations the same way plain scalar
+			// fields do.
+			ft := f.Type
+			for ft.Kind() == reflect.Pointer {
+				ft = ft.Elem()
+			}
+			switch ft.Kind() {
 			case reflect.Bool:
 				if b, err := strconv.ParseBool(s); err == nil {
 					data[name] = b

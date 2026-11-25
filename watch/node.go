@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -22,18 +23,6 @@ func factory(n nodestore.NodeInterface, e nodebase.NodeHost) (nodebase.NodeExecu
 	c := new(WatchConfig)
 	if err := nodebase.DecodeConfig(n, c); err != nil {
 		return nil, err
-	}
-	// Node-RED's watch node stores targets in `files` — either a plain
-	// path or a JSON array of paths; the node watches the first entry.
-	if c.Filename == "" {
-		if raw, ok := n.GetData()["files"].(string); ok && raw != "" {
-			var arr []string
-			if err := json.Unmarshal([]byte(raw), &arr); err == nil && len(arr) > 0 {
-				c.Filename = arr[0]
-			} else {
-				c.Filename = raw
-			}
-		}
 	}
 	return NewWatchNode(n, c, e), nil
 }
@@ -62,7 +51,7 @@ var schema = map[string]interface{}{
 		"filename": map[string]string{
 			"type":        "string",
 			"title":       "Path",
-			"description": "File or directory to watch",
+			"description": "File or directory to watch; a comma-separated list watches several paths and each entry may be a glob (e.g. \"/log/*.txt\")",
 		},
 		"recursive": map[string]interface{}{
 			"type":        "boolean",
@@ -84,9 +73,15 @@ var schema = map[string]interface{}{
 // `watch` equivalent: a filesystem watcher emitting one message per
 // changed path.
 type WatchConfig struct {
-	// Filename is the file or directory to watch. A directory without
-	// Recursive watches its immediate entries only.
+	// Filename is the file or directory to watch — a comma-separated
+	// list watches several paths and each entry may be a glob pattern
+	// (e.g. "/log/*.txt"). A directory without Recursive watches its
+	// immediate entries only.
 	Filename string `json:"filename"`
+	// Files carries Node-RED's serialized watch target: a
+	// comma-separated path list or, from older imports, a JSON array
+	// of paths. Entries combine with Filename's.
+	Files string `json:"files"`
 	// Recursive walks subdirectories when Filename is a directory.
 	Recursive bool `json:"recursive"`
 	// Interval is the poll period in seconds (default 1). A polling
@@ -124,35 +119,75 @@ func NewWatchNode(node nodestore.NodeInterface, config *WatchConfig, host nodeba
 	}
 }
 
-// Execute resolves the watch path, takes the baseline snapshot and
+// pathSpecs returns the distinct path specs to watch: Filename split
+// on commas plus any Node-RED `files` entries (a comma-separated list
+// or a legacy JSON array). Each spec may carry glob metacharacters —
+// they are expanded on every poll so files created later still match.
+func (n *WatchNode) pathSpecs() []string {
+	seen := map[string]bool{}
+	var specs []string
+	add := func(s string) {
+		s = strings.TrimSpace(s)
+		if s != "" && !seen[s] {
+			seen[s] = true
+			specs = append(specs, s)
+		}
+	}
+	for _, p := range strings.Split(n.config.Filename, ",") {
+		add(p)
+	}
+	if raw := strings.TrimSpace(n.config.Files); raw != "" {
+		var arr []string
+		if err := json.Unmarshal([]byte(raw), &arr); err == nil {
+			for _, p := range arr {
+				add(p)
+			}
+		} else {
+			for _, p := range strings.Split(raw, ",") {
+				add(p)
+			}
+		}
+	}
+	return specs
+}
+
+// Execute resolves the watch specs, takes the baseline snapshot and
 // starts the polling goroutine.
 func (n *WatchNode) Execute(ctx context.Context, input nodestore.MessageInterface) (nodestore.MessageInterface, error) {
+	specs := n.pathSpecs()
+	if len(specs) == 0 {
+		return nil, fmt.Errorf("watch requires a filename to watch")
+	}
 	var root string
 	if n.host != nil {
 		root = n.host.FileRootPath()
 	}
-	path, err := nodebase.ResolveFilePath(root, n.config.Filename)
-	if err != nil {
-		return nil, fmt.Errorf("watch: %w", err)
+	resolved := make([]string, 0, len(specs))
+	for _, s := range specs {
+		p, err := nodebase.ResolveFilePath(root, s)
+		if err != nil {
+			return nil, fmt.Errorf("watch: %w", err)
+		}
+		resolved = append(resolved, p)
 	}
-	snap := n.snapshot(path)
+	snap := n.snapshotSpecs(resolved)
 	interval := n.config.Interval
 	if interval <= 0 {
 		interval = 1
 	}
-	go n.loop(ctx, path, snap, time.Duration(interval*float64(time.Second)))
-	return nodestore.NewMessage().SetPayload(map[string]interface{}{"status": "watching", "filename": path}).SetTimestamp(time.Now()), nil
+	go n.loop(ctx, resolved, snap, time.Duration(interval*float64(time.Second)))
+	return nodestore.NewMessage().SetPayload(map[string]interface{}{"status": "watching", "filename": resolved[0], "paths": resolved}).SetTimestamp(time.Now()), nil
 }
 
-// loop polls the path until the node is stopped, emitting a message
+// loop polls the specs until the node is stopped, emitting a message
 // per added/changed/removed entry on each diff.
-func (n *WatchNode) loop(ctx context.Context, path string, snap map[string]watchEntry, interval time.Duration) {
+func (n *WatchNode) loop(ctx context.Context, specs []string, snap map[string]watchEntry, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
-			next := n.snapshot(path)
+			next := n.snapshotSpecs(specs)
 			for p, cur := range next {
 				prev, ok := snap[p]
 				switch {
@@ -191,6 +226,26 @@ func (n *WatchNode) emitChange(path, event string, e watchEntry) {
 		"filesize": e.size,
 	}).SetTimestamp(time.Now())
 	_ = n.host.Emit(n.workflowID, n.GetID(), payload, nil)
+}
+
+// snapshotSpecs merges the path→entry maps of every spec, expanding
+// glob specs on each call.
+func (n *WatchNode) snapshotSpecs(specs []string) map[string]watchEntry {
+	out := map[string]watchEntry{}
+	for _, spec := range specs {
+		matches := []string{spec}
+		if strings.ContainsAny(spec, "*?[") {
+			if g, err := filepath.Glob(spec); err == nil && len(g) > 0 {
+				matches = g
+			}
+		}
+		for _, p := range matches {
+			for path, e := range n.snapshot(p) {
+				out[path] = e
+			}
+		}
+	}
+	return out
 }
 
 // snapshot builds the path→entry map for the watched file or directory
@@ -241,7 +296,7 @@ func (n *WatchNode) Validate() error {
 	if err := n.BaseNode.Validate(); err != nil {
 		return err
 	}
-	if n.config.Filename == "" {
+	if len(n.pathSpecs()) == 0 {
 		return fmt.Errorf("watch requires a filename to watch")
 	}
 	if n.config.Interval < 0 {

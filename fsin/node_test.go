@@ -183,3 +183,14 @@ func TestFsInValidate(t *testing.T) {
 		t.Fatal("bad format should fail")
 	}
 }
+
+func TestFsInEmitAfterStop(t *testing.T) {
+	// A poll in flight when Stop() runs used to nil-deref the closed
+	// fs handle — emitFile must bail instead.
+	host := &fakeHost{}
+	n := newNode(&FsInConfig{Location: t.TempDir()}, host)
+	if err := n.Stop(); err != nil {
+		t.Fatalf("stop failed: %v", err)
+	}
+	n.emitFile("/x", nodebase.FsEntry{Name: "x"})
+}
