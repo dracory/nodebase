@@ -4,6 +4,9 @@ package change
 import (
 	"context"
 	_ "embed"
+	"fmt"
+	"strings"
+
 	"github.com/dracory/nodebase"
 	nodestore "github.com/dracory/nodestore"
 )
@@ -16,7 +19,97 @@ func factory(n nodestore.NodeInterface, e nodebase.NodeHost) (nodebase.NodeExecu
 	if err := nodebase.DecodeConfig(n, c); err != nil {
 		return nil, err
 	}
+	if err := translateNRRules(n, c); err != nil {
+		return nil, err
+	}
 	return NewChangeNode(n, c), nil
+}
+
+// translateNRRules rewrites c.Rules when they arrived in Node-RED's
+// serialization ({t:"set",p:"payload.x",pt:"msg",to:"1",tot:"num"})
+// instead of the native {op,field,value} shape. Supported: set/delete/
+// move with str/num/json/bool/msg values. Env vars, JSONata, regex
+// replace and flow/global context have no native equivalent and fail
+// loudly at deploy.
+func translateNRRules(n nodestore.NodeInterface, c *ChangeConfig) error {
+	raw, ok := n.GetData()["rules"].([]interface{})
+	if !ok {
+		return nil
+	}
+	native := true
+	for _, r := range raw {
+		if m, ok := r.(map[string]interface{}); ok {
+			if _, hasOp := m["op"]; !hasOp {
+				native = false
+			}
+		}
+	}
+	if native {
+		return nil
+	}
+	translated := make([]ChangeRule, 0, len(raw))
+	for i, r := range raw {
+		m, ok := r.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		t, _ := m["t"].(string)
+		pt, _ := m["pt"].(string)
+		p, _ := m["p"].(string)
+		field := nrField(p, pt)
+		if pt == "flow" || pt == "global" {
+			return fmt.Errorf("change: rule %d uses %s context — not supported", i, pt)
+		}
+		switch t {
+		case "set":
+			tot, _ := m["tot"].(string)
+			to, _ := m["to"].(string)
+			switch tot {
+			case "msg":
+				translated = append(translated, ChangeRule{Op: "set", Field: field, FromField: to})
+			case "", "str", "num", "json", "bool", "bin":
+				translated = append(translated, ChangeRule{Op: "set", Field: field, Value: to})
+			default:
+				return fmt.Errorf("change: rule %d uses Node-RED value type %q — not supported", i, tot)
+			}
+		case "delete":
+			translated = append(translated, ChangeRule{Op: "delete", Field: field})
+		case "move":
+			to, _ := m["to"].(string)
+			tot, _ := m["tot"].(string)
+			if tot != "" && tot != "msg" {
+				return fmt.Errorf("change: rule %d move target uses type %q — not supported", i, tot)
+			}
+			translated = append(translated, ChangeRule{Op: "move", Field: field, Value: nrField(to, "msg")})
+		case "change":
+			return fmt.Errorf("change: rule %d uses regex change — not supported", i)
+		default:
+			if t != "" {
+				return fmt.Errorf("change: rule %d has unknown Node-RED type %q", i, t)
+			}
+		}
+	}
+	c.Rules = translated
+	return nil
+}
+
+// nrField maps a Node-RED rule target (p + pt) onto the native field
+// convention: "payload"/"" is the whole payload, "payload.x" is a path
+// inside it, other msg.* properties use the "msg." metadata prefix.
+func nrField(p, pt string) string {
+	if pt == "" {
+		pt = "msg"
+	}
+	switch {
+	case p == "payload":
+		return "payload"
+	case strings.HasPrefix(p, "payload."):
+		return strings.TrimPrefix(p, "payload.")
+	case pt == "flow" || pt == "global":
+		return p // caller rejects pt flow/global anyway
+	default:
+		return "msg." + p
+	}
 }
 
 // init registers the change node with the core set.
@@ -72,6 +165,10 @@ type ChangeRule struct {
 	Op    string `json:"op"` // set | delete | move
 	Field string `json:"field"`
 	Value string `json:"value"`
+	// FromField, when set, takes the value from a message path
+	// (msg.topic, payload.user, …) instead of the literal Value —
+	// Node-RED's set-with-tot:"msg".
+	FromField string `json:"fromField,omitempty"`
 }
 
 // ChangeConfig holds configuration for the change node
@@ -103,6 +200,10 @@ func (n *ChangeNode) Execute(ctx context.Context, input nodestore.MessageInterfa
 		case "set":
 			n.applySet(input, rule)
 		case "delete":
+			if rule.Field == "" || rule.Field == "payload" {
+				input.SetPayload(nil) // Node-RED: delete msg.payload
+				continue
+			}
 			if path, ok := nodebase.MsgPath(rule.Field); ok {
 				nodebase.DeletePath(input.GetMetadata(), path)
 			} else {
@@ -120,7 +221,20 @@ func (n *ChangeNode) Execute(ctx context.Context, input nodestore.MessageInterfa
 // is set inside the data map.
 // The value is stored as parsed JSON when it parses, else as a string.
 func (n *ChangeNode) applySet(input nodestore.MessageInterface, rule ChangeRule) {
-	value := nodebase.ParseJSONOrString(rule.Value)
+	var value interface{}
+	if rule.FromField != "" {
+		// Copy semantics (Node-RED tot:"msg"): read another message
+		// property — metadata first, then inside the payload map.
+		if path, ok := nodebase.MsgPath(rule.FromField); ok {
+			value, _ = nodebase.GetPath(input.GetMetadata(), path)
+		} else if rule.FromField == "payload" {
+			value = input.GetPayload()
+		} else if m, ok := input.GetPayload().(map[string]interface{}); ok {
+			value, _ = nodebase.GetPath(m, rule.FromField)
+		}
+	} else {
+		value = nodebase.ParseJSONOrString(rule.Value)
+	}
 
 	if rule.Field == "" || rule.Field == "payload" {
 		input.SetPayload(value)

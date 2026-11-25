@@ -25,6 +25,10 @@ func factory(n nodestore.NodeInterface, e nodebase.NodeHost) (nodebase.NodeExecu
 	if err := nodebase.DecodeConfig(n, c); err != nil {
 		return nil, err
 	}
+	// Node-RED's "http in" node stores the route in `url`.
+	if c.Path == "" {
+		c.Path, _ = n.GetData()["url"].(string)
+	}
 	return NewHTTPTrigger(n, c, e), nil
 }
 

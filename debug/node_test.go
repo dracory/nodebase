@@ -32,7 +32,7 @@ func TestDebugCompleteModes(t *testing.T) {
 	// default: payload only
 	n := newNode(nil)
 	ev := n.PostRunEvents(n.NodeInterface, msg)
-	if len(ev) < 1 || !strings.Contains(ev[0].Message, `"a": 1`) {
+	if len(ev) < 1 || !strings.Contains(ev[0].Message, `"a":1`) {
 		t.Fatalf("default event wrong: %v", ev)
 	}
 
@@ -46,7 +46,7 @@ func TestDebugCompleteModes(t *testing.T) {
 	// complete=false: Node-RED legacy spelling for "payload"
 	n3 := newNode(map[string]interface{}{"complete": "false"})
 	ev3 := n3.PostRunEvents(n3.NodeInterface, msg)
-	if !strings.Contains(ev3[0].Message, `"a": 1`) {
+	if !strings.Contains(ev3[0].Message, `"a":1`) {
 		t.Fatalf("complete=false should render payload: %v", ev3)
 	}
 

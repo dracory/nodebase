@@ -4,6 +4,7 @@ package watch
 import (
 	"context"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"github.com/dracory/nodebase"
 	nodestore "github.com/dracory/nodestore"
@@ -21,6 +22,18 @@ func factory(n nodestore.NodeInterface, e nodebase.NodeHost) (nodebase.NodeExecu
 	c := new(WatchConfig)
 	if err := nodebase.DecodeConfig(n, c); err != nil {
 		return nil, err
+	}
+	// Node-RED's watch node stores targets in `files` — either a plain
+	// path or a JSON array of paths; the node watches the first entry.
+	if c.Filename == "" {
+		if raw, ok := n.GetData()["files"].(string); ok && raw != "" {
+			var arr []string
+			if err := json.Unmarshal([]byte(raw), &arr); err == nil && len(arr) > 0 {
+				c.Filename = arr[0]
+			} else {
+				c.Filename = raw
+			}
+		}
 	}
 	return NewWatchNode(n, c, e), nil
 }

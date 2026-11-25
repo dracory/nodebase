@@ -63,6 +63,11 @@ func translateNRRules(n nodestore.NodeInterface, c *SwitchConfig) error {
 			c.Otherwise = true
 			continue
 		}
+		p, _ := m["p"].(string)
+		if t == "true" || t == "false" {
+			translated = append(translated, nodebase.SwitchRule{Property: nrSwitchPath(p), Op: "eq", Value: t})
+			continue
+		}
 		op, supported := nrRuleOps[t]
 		if !supported {
 			return fmt.Errorf("switch: rule %d uses Node-RED type %q which has no equivalent op", i, t)
@@ -70,14 +75,7 @@ func translateNRRules(n nodestore.NodeInterface, c *SwitchConfig) error {
 		if pt, _ := m["pt"].(string); pt != "" && pt != "msg" {
 			return fmt.Errorf("switch: rule %d reads %s context — only msg properties are supported", i, pt)
 		}
-		p, _ := m["p"].(string)
-		// msg.payload maps to the payload itself (""); msg.payload.x
-		// strips the prefix; anything else (msg.topic, …) resolves via
-		// the metadata fallback in EvalSwitchRule.
-		p = strings.TrimPrefix(p, "payload.")
-		if p == "payload" {
-			p = ""
-		}
+		p = nrSwitchPath(p)
 		v, _ := m["v"].(string)
 		translated = append(translated, nodebase.SwitchRule{Property: p, Op: op, Value: v})
 	}
@@ -85,6 +83,17 @@ func translateNRRules(n nodestore.NodeInterface, c *SwitchConfig) error {
 		c.Rules = translated
 	}
 	return nil
+}
+
+// nrSwitchPath maps a Node-RED rule property path: msg.payload maps to
+// the payload itself (""), msg.payload.x strips the prefix, anything
+// else (msg.topic, …) resolves via the metadata fallback in
+// EvalSwitchRule.
+func nrSwitchPath(p string) string {
+	if p == "payload" {
+		return ""
+	}
+	return strings.TrimPrefix(p, "payload.")
 }
 
 // init registers the switch node with the core set.
