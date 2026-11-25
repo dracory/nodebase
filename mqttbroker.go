@@ -325,8 +325,29 @@ func MQTTClientOptions(o *MQTTOpts, clientID string) *mqtt.ClientOptions {
 		clientID = o.ClientID
 	}
 	addr := strings.TrimSpace(o.Broker)
-	if !strings.Contains(addr, "://") {
-		addr = "tcp://" + addr
+	scheme := ""
+	if i := strings.Index(addr, "://"); i >= 0 {
+		scheme = addr[:i]
+	}
+	// paho picks the transport off the URL scheme alone — a tcp:// (or
+	// schemeless) address dials PLAINTEXT even when a tls.Config is
+	// set. TLS material must therefore rewrite the scheme, or usetls
+	// silently speaks cleartext to the broker.
+	if o.TLS != nil {
+		switch scheme {
+		case "", "tcp", "mqtt":
+			scheme = "ssl"
+		case "ws":
+			scheme = "wss"
+		}
+	}
+	if scheme == "" {
+		scheme = "tcp"
+	}
+	if i := strings.Index(addr, "://"); i >= 0 {
+		addr = scheme + addr[i:]
+	} else {
+		addr = scheme + "://" + addr
 	}
 	opts := mqtt.NewClientOptions().
 		AddBroker(addr).

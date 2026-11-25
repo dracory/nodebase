@@ -343,8 +343,8 @@ func TestMQTTClientOptions(t *testing.T) {
 	if opts.Username != "u" || opts.Password != "p" {
 		t.Fatal("credentials not propagated")
 	}
-	if len(opts.Servers) != 1 || opts.Servers[0].String() != "tcp://b:1883" {
-		t.Fatalf("broker URL not normalized: %+v", opts.Servers)
+	if len(opts.Servers) != 1 || opts.Servers[0].String() != "ssl://b:1883" {
+		t.Fatalf("TLS material must rewrite the scheme to ssl (paho dials plaintext for tcp): %+v", opts.Servers)
 	}
 }
 

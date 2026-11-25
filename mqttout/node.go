@@ -126,7 +126,7 @@ var schema = map[string]interface{}{
 		"topic": map[string]string{
 			"type":        "string",
 			"title":       "Topic",
-			"description": "Publish topic; the message's topic metadata overrides it",
+			"description": "Publish topic; when blank the message's topic metadata is used instead",
 		},
 		"qos": map[string]interface{}{
 			"type":    "integer",
@@ -161,7 +161,7 @@ var schema = map[string]interface{}{
 // keepalive, TLS and last-will fields).
 type MQTTOutConfig struct {
 	nodebase.MQTTConnConfig
-	// Topic is the publish topic (the message's topic metadata overrides it).
+	// Topic is the publish topic; when blank the message's topic metadata is used (Node-RED precedence).
 	Topic string `json:"topic"`
 	// QoS is the publish quality of service (0|1|2).
 	QoS int `json:"qos"`
@@ -179,14 +179,24 @@ type MQTTOutNode struct {
 	workflowID string
 }
 
-// Execute serializes Data, publishes it and returns the input payload.
-func (n *MQTTOutNode) Execute(ctx context.Context, input nodestore.MessageInterface) (nodestore.MessageInterface, error) {
-	topic := n.config.Topic
+// publishTopic resolves the publish topic with Node-RED precedence:
+// the configured topic wins; the message's topic metadata is only the
+// fallback when the config is blank.
+func publishTopic(configTopic string, input nodestore.MessageInterface) string {
+	if t := strings.TrimSpace(configTopic); t != "" {
+		return t
+	}
 	if input != nil {
-		if t, ok := input.GetMetadata()["topic"].(string); ok && t != "" {
-			topic = t
+		if t, ok := input.GetMetadata()["topic"].(string); ok {
+			return t
 		}
 	}
+	return ""
+}
+
+// Execute serializes Data, publishes it and returns the input payload.
+func (n *MQTTOutNode) Execute(ctx context.Context, input nodestore.MessageInterface) (nodestore.MessageInterface, error) {
+	topic := publishTopic(n.config.Topic, input)
 	if topic == "" {
 		return nil, errors.New("mqttOut requires a topic (config or message metadata)")
 	}

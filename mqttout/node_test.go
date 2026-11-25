@@ -67,3 +67,20 @@ func TestMQTTOutValidateTLSPairRule(t *testing.T) {
 		t.Fatal("lone tlskey must fail validation")
 	}
 }
+
+// TestPublishTopicPrecedence pins the Node-RED rule: the configured
+// topic wins over msg.topic, which is only the fallback for a blank
+// config — otherwise an mqttIn → mqttOut chain republishes onto the
+// subscription topic and loops.
+func TestPublishTopicPrecedence(t *testing.T) {
+	msg := nodestore.NewMessage().SetMetadata(map[string]interface{}{"topic": "msg/topic"})
+	if got := publishTopic("configured/topic", msg); got != "configured/topic" {
+		t.Fatalf("configured topic must win over msg.topic, got %q", got)
+	}
+	if got := publishTopic("", msg); got != "msg/topic" {
+		t.Fatalf("blank config must fall back to msg.topic, got %q", got)
+	}
+	if got := publishTopic("", nodestore.NewMessage()); got != "" {
+		t.Fatalf("no config and no msg.topic must stay empty, got %q", got)
+	}
+}
