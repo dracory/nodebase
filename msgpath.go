@@ -2,6 +2,7 @@ package nodebase
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	nodestore "github.com/dracory/nodestore"
@@ -124,6 +125,65 @@ func LookupProperty(input nodestore.MessageInterface, path string) (interface{},
 		}
 	}
 	return current, true
+}
+
+// LookupMessageProperty resolves the configurable property convention used
+// by whole-property transform nodes: "payload" is the root payload, "msg.*"
+// reads metadata, "payload.*" reads a nested payload-map path, and any other
+// dotted path reads inside a map payload. As a compatibility fallback,
+// LookupProperty's direct metadata and payload-path lookup is used for other
+// single-segment names.
+func LookupMessageProperty(input nodestore.MessageInterface, property string) (interface{}, bool) {
+	if input == nil || property == "" {
+		return nil, false
+	}
+	if property == "payload" {
+		return input.GetPayload(), true
+	}
+	if rest, ok := MsgPath(property); ok {
+		return GetPath(input.GetMetadata(), rest)
+	}
+	if rest, ok := strings.CutPrefix(property, "payload."); ok && rest != "" {
+		payload, ok := input.GetPayload().(map[string]interface{})
+		if !ok {
+			return nil, false
+		}
+		return GetPath(payload, rest)
+	}
+	return LookupProperty(input, property)
+}
+
+// SetMessageProperty writes a value using the same property convention as
+// LookupMessageProperty. Nested non-payload properties require a map payload;
+// metadata paths are created as needed.
+func SetMessageProperty(input nodestore.MessageInterface, property string, value interface{}) error {
+	if input == nil || property == "" {
+		return fmt.Errorf("message property is required")
+	}
+	if property == "payload" {
+		input.SetPayload(value)
+		return nil
+	}
+	if rest, ok := MsgPath(property); ok {
+		metadata := input.GetMetadata()
+		if metadata == nil {
+			metadata = map[string]interface{}{}
+		}
+		SetPath(metadata, rest, value)
+		input.SetMetadata(metadata)
+		return nil
+	}
+	path := property
+	if rest, ok := strings.CutPrefix(property, "payload."); ok && rest != "" {
+		path = rest
+	}
+	payload, ok := input.GetPayload().(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("message property %q requires a map payload", property)
+	}
+	SetPath(payload, path, value)
+	input.SetPayload(payload)
+	return nil
 }
 
 // rangeProperty extracts the watched value: "payload" returns the whole

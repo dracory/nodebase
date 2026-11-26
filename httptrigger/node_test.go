@@ -294,6 +294,21 @@ func TestTriggerSwaggerCorsTolerated(t *testing.T) {
 	}
 }
 
+func TestTriggerBinaryResponse(t *testing.T) {
+	host := &fakeHost{responseCh: make(chan nodestore.MessageInterface, 1)}
+	n := newNode(&HTTPTriggerConfig{Method: http.MethodGet, Path: "/x"}, host)
+	original := []byte{0, 1, 2, 0xff, 'P', 'D', 'F'}
+	host.responseCh <- nodestore.NewMessage().SetPayload(original)
+	rec := httptest.NewRecorder()
+	n.handleRequest(rec, httptest.NewRequest(http.MethodGet, "/x", nil))
+	if ct := rec.Header().Get("Content-Type"); ct != "application/octet-stream" {
+		t.Fatalf("binary response content type wrong: %q", ct)
+	}
+	if !bytes.Equal(rec.Body.Bytes(), original) {
+		t.Fatalf("binary response = %v, want original bytes %v", rec.Body.Bytes(), original)
+	}
+}
+
 func TestTriggerJSONResponse(t *testing.T) {
 	host := &fakeHost{responseCh: make(chan nodestore.MessageInterface, 1)}
 	n := newNode(&HTTPTriggerConfig{Method: http.MethodGet, Path: "/x"}, host)

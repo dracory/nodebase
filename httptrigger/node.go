@@ -346,19 +346,30 @@ func (n *HTTPTrigger) handleRequest(w http.ResponseWriter, r *http.Request) {
 			statusCode = sc
 		}
 		// Express res.send semantics: strings are HTML unless the flow
-		// explicitly set a content type; non-strings are JSON.
-		if _, isString := response.GetPayload().(string); isString {
+		// explicitly set a content type; buffers are raw binary; other
+		// values are JSON.
+		switch response.GetPayload().(type) {
+		case string:
 			if w.Header().Get("Content-Type") == "" {
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			}
-		} else if w.Header().Get("Content-Type") == "" {
-			w.Header().Set("Content-Type", "application/json")
+		case []byte:
+			if w.Header().Get("Content-Type") == "" {
+				w.Header().Set("Content-Type", "application/octet-stream")
+			}
+		default:
+			if w.Header().Get("Content-Type") == "" {
+				w.Header().Set("Content-Type", "application/json")
+			}
 		}
 		w.WriteHeader(statusCode)
-		// Strings go out raw; anything else is JSON-encoded
-		if body, ok := response.GetPayload().(string); ok {
+		// Strings and bytes go out raw; anything else is JSON-encoded.
+		switch body := response.GetPayload().(type) {
+		case string:
 			w.Write([]byte(body))
-		} else {
+		case []byte:
+			w.Write(body)
+		default:
 			json.NewEncoder(w).Encode(response.GetPayload())
 		}
 	case <-time.After(n.responseTimeout()):

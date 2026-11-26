@@ -37,7 +37,7 @@ func TestPortedTypesRegistered(t *testing.T) {
 	for _, typeID := range []string{
 		"uiText", "uiGauge", "uiChart", "uiNotification",
 		"uiButton", "uiTextInput", "uiForm",
-		"pdf", "docToText",
+		"pdf", "docToText", "compress", "hash",
 	} {
 		reg, ok := nodebase.RegisteredNode(typeID)
 		if !ok {
