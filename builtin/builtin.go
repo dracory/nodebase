@@ -3,8 +3,13 @@
 package builtin
 
 import (
+	_ "github.com/dracory/nodebase/aiagent"
+	_ "github.com/dracory/nodebase/aiapproval"
+	_ "github.com/dracory/nodebase/aimemory"
 	_ "github.com/dracory/nodebase/aiprovider"
 	_ "github.com/dracory/nodebase/airequest"
+	_ "github.com/dracory/nodebase/aitool"
+	_ "github.com/dracory/nodebase/aitoolreturn"
 	_ "github.com/dracory/nodebase/batch"
 	_ "github.com/dracory/nodebase/catch"
 	_ "github.com/dracory/nodebase/change"

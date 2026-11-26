@@ -181,7 +181,7 @@ func WorkflowNodeDisabled(workflow nodestore.WorkflowInterface, node nodestore.N
 			}
 		}
 		// A child flow entity flagged enabled:false disables every node
-		// on it (same state as a disabledModules listing).
+		// on it (same state as a disabledFlows listing).
 		if uiFlowEntityDisabled(workflow, mod) {
 			return true
 		}
@@ -224,7 +224,7 @@ func uiTruthyFlag(v any) bool {
 }
 
 // uiFlowLabel resolves a child flow reference (id or label) to its
-// label per view.childFlows, so a name-keyed disabledModules entry
+// label per view.childFlows, so a name-keyed disabledFlows entry
 // matches a node carrying the child flow id and vice versa.
 func uiFlowLabel(w nodestore.WorkflowInterface, ref string) string {
 	if w == nil || w.GetView() == nil || ref == "" {

@@ -13,7 +13,10 @@ import (
 // TestAITypesRegistered asserts the ai-* nodes resolve from the
 // registry with a factory, palette metadata, schema and editor HTML.
 func TestAITypesRegistered(t *testing.T) {
-	for _, typeID := range []string{"ai-provider", "ai-request"} {
+	for _, typeID := range []string{
+		"ai-provider", "ai-request", "ai-agent", "ai-tool",
+		"ai-tool-return", "ai-memory", "ai-approval",
+	} {
 		reg, ok := nodebase.RegisteredNode(typeID)
 		if !ok {
 			t.Fatalf("type %q not registered", typeID)
