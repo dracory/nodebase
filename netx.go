@@ -1,7 +1,6 @@
 package nodebase
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -19,16 +18,14 @@ func TCPPayloadBytes(input nodestore.MessageInterface) ([]byte, error) {
 	if input == nil || input.GetPayload() == nil {
 		return nil, errors.New("tcpOut requires message data")
 	}
-	switch v := input.GetPayload().(type) {
-	case string:
-		return []byte(v), nil
-	case []byte:
-		return v, nil
+	raw, err := PayloadBytes(input.GetPayload())
+	if err != nil {
+		return nil, fmt.Errorf("tcpOut cannot serialize data: %w", err)
+	}
+	switch input.GetPayload().(type) {
+	case string, []byte:
+		return raw, nil
 	default:
-		raw, err := json.Marshal(v)
-		if err != nil {
-			return nil, fmt.Errorf("tcpOut cannot serialize data: %w", err)
-		}
 		return append(raw, '\n'), nil
 	}
 }

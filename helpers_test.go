@@ -6,6 +6,7 @@ package nodebase
 // metadata paths) are verified here.
 
 import (
+	"bytes"
 	"context"
 	"testing"
 
@@ -263,6 +264,28 @@ func TestStringHelpers(t *testing.T) {
 	}
 }
 
+func TestPayloadBytes(t *testing.T) {
+	b, err := PayloadBytes("hi")
+	if err != nil || string(b) != "hi" {
+		t.Fatalf("string conversion wrong: %q, %v", b, err)
+	}
+	b, err = PayloadBytes([]byte{0, 0xff})
+	if err != nil || !bytes.Equal(b, []byte{0, 0xff}) {
+		t.Fatalf("binary conversion wrong: %v, %v", b, err)
+	}
+	b, err = PayloadBytes(map[string]interface{}{"a": 1})
+	if err != nil || string(b) != `{"a":1}` {
+		t.Fatalf("object conversion wrong: %q, %v", b, err)
+	}
+	b, err = PayloadBytes(nil)
+	if err != nil || string(b) != "null" {
+		t.Fatalf("nil conversion wrong: %q, %v", b, err)
+	}
+	if _, err := PayloadBytes(func() {}); err == nil {
+		t.Fatal("unserializable payload should error")
+	}
+}
+
 // TestClonePayload verifies deep-copy semantics: fresh id, parentMsgId
 // recorded, payload/metatada detached, []byte preserved.
 func TestClonePayload(t *testing.T) {
@@ -293,6 +316,31 @@ func TestClonePayload(t *testing.T) {
 	b[0] = 9
 	if bin.GetPayload().([]byte)[0] != 1 {
 		t.Fatal("binary payload shared between clone and source")
+	}
+	nested := nodestore.NewMessage().SetPayload(map[string]interface{}{
+		"blob": []byte{0, 0xff},
+		"list": []interface{}{[]byte{3, 4}},
+	})
+	nc := ClonePayload(nested)
+	nm, ok := nc.GetPayload().(map[string]interface{})
+	if !ok {
+		t.Fatalf("nested payload clone is %T", nc.GetPayload())
+	}
+	blob, ok := nm["blob"].([]byte)
+	if !ok || !bytes.Equal(blob, []byte{0, 0xff}) {
+		t.Fatalf("nested binary payload must survive clone: %#v (%T)", nm["blob"], nm["blob"])
+	}
+	list, ok := nm["list"].([]interface{})
+	if !ok || len(list) != 1 {
+		t.Fatalf("nested list clone wrong: %#v", nm["list"])
+	}
+	item, ok := list[0].([]byte)
+	if !ok || !bytes.Equal(item, []byte{3, 4}) {
+		t.Fatalf("nested list binary payload must survive clone: %#v (%T)", list[0], list[0])
+	}
+	item[0] = 9
+	if nested.GetPayload().(map[string]interface{})["list"].([]interface{})[0].([]byte)[0] != 3 {
+		t.Fatal("nested binary payload shared between clone and source")
 	}
 	// error carried over
 	src.SetError("boom")

@@ -2,6 +2,7 @@ package nodebase
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"uuid"
@@ -29,6 +30,26 @@ func StringOf(v any) string {
 		return s
 	}
 	return ""
+}
+
+// PayloadBytes normalizes a message payload to bytes for byte-oriented
+// consumers: strings are their UTF-8 bytes, []byte passes through unchanged,
+// and every other JSON-serializable value is encoded as JSON. A nil payload
+// therefore becomes the JSON document "null"; consumers for which nil means
+// "missing" must reject it before calling this helper.
+func PayloadBytes(data any) ([]byte, error) {
+	switch v := data.(type) {
+	case string:
+		return []byte(v), nil
+	case []byte:
+		return v, nil
+	default:
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return nil, fmt.Errorf("payload cannot serialize as JSON: %w", err)
+		}
+		return raw, nil
+	}
 }
 
 // ParseLinkList accepts links configured either as a JSON array of node
@@ -104,8 +125,9 @@ func messageWithError(m nodestore.MessageInterface, err *string) nodestore.Messa
 }
 
 // ClonePayload deep-copies a payload for a fan-out branch: Payload is
-// copied via JSON round-trip (so sibling branches can't share maps),
-// Metadata is shallow-copied preserving the msgId needed by response
+// copied through the shared durable payload JSON codec (so sibling branches
+// can't share maps and []byte values survive as bytes), Metadata is
+// shallow-copied preserving the msgId needed by response
 // nodes — shallow deliberately: the JSON round-trip would coerce
 // non-JSON-safe types (int64→float64), and nested-map mutations are
 // the mutating node's job to detach (see sort.emitSequence). A clone
@@ -117,22 +139,15 @@ func ClonePayload(p nodestore.MessageInterface) nodestore.MessageInterface {
 	}
 	clone := messageWithError(nodestore.NewMessage().SetID(GenerateID()), p.GetError()).SetTimestamp(p.GetTimestamp())
 	if p.GetPayload() != nil {
-		if b, ok := p.GetPayload().([]byte); ok {
-			// Binary payloads (fileIn binary mode, submitIn uploads)
-			// must survive the edge intact — the JSON round-trip below
-			// would otherwise turn them into base64 strings.
-			clone.SetPayload(append([]byte(nil), b...))
-		} else {
-			raw, err := json.Marshal(p.GetPayload())
+		raw, err := nodestore.MarshalPayloadJSON(p.GetPayload())
+		if err == nil {
+			data, err := nodestore.UnmarshalPayloadJSON(raw)
 			if err == nil {
-				var data interface{}
-				if json.Unmarshal(raw, &data) == nil {
-					clone.SetPayload(data)
-				}
+				clone.SetPayload(data)
 			}
-			if clone.GetPayload() == nil {
-				clone.SetPayload(p.GetPayload()) // non-JSON data: share rather than drop
-			}
+		}
+		if clone.GetPayload() == nil {
+			clone.SetPayload(p.GetPayload()) // non-JSON data: share rather than drop
 		}
 	}
 	if p.GetMetadata() != nil {

@@ -5,6 +5,7 @@ package nodebase
 // the noderun fs spec cannot reach without real sftp/ftp servers.
 
 import (
+	"bytes"
 	"path/filepath"
 	"testing"
 
@@ -151,6 +152,10 @@ func TestEncodeFilePayload(t *testing.T) {
 	b, _ = EncodeFilePayload([]byte{1, 2}, "")
 	if len(b) != 2 {
 		t.Fatal("[]byte passthrough wrong")
+	}
+	b, err = EncodeFilePayload([]byte{0, 0xff}, "base64")
+	if err != nil || !bytes.Equal(b, []byte{0, 0xff}) {
+		t.Fatalf("[]byte must stay binary even with base64 encoding: %v, %v", b, err)
 	}
 	b, _ = EncodeFilePayload(map[string]interface{}{"a": 1}, "")
 	if string(b) != `{"a":1}` {

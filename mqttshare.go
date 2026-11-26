@@ -1,7 +1,6 @@
 package nodebase
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -72,18 +71,11 @@ func MQTTPayloadBytes(input nodestore.MessageInterface) ([]byte, error) {
 	if input == nil || input.GetPayload() == nil {
 		return nil, errors.New("mqttOut requires message data")
 	}
-	switch v := input.GetPayload().(type) {
-	case string:
-		return []byte(v), nil
-	case []byte:
-		return v, nil
-	default:
-		raw, err := json.Marshal(v)
-		if err != nil {
-			return nil, fmt.Errorf("mqttOut cannot serialize data: %w", err)
-		}
-		return raw, nil
+	raw, err := PayloadBytes(input.GetPayload())
+	if err != nil {
+		return nil, fmt.Errorf("mqttOut cannot serialize data: %w", err)
 	}
+	return raw, nil
 }
 
 // NewMQTTClientPool returns an empty pool (the value stored under

@@ -4,7 +4,6 @@ package websocketout
 import (
 	"context"
 	_ "embed"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -280,7 +279,7 @@ func wsPayload(input nodestore.MessageInterface) (websocket.MessageType, []byte,
 	case []byte:
 		return websocket.MessageBinary, v, nil
 	default:
-		raw, err := json.Marshal(v)
+		raw, err := nodebase.PayloadBytes(v)
 		if err != nil {
 			return 0, nil, fmt.Errorf("websocketOut cannot serialize data: %w", err)
 		}

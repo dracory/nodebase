@@ -192,7 +192,7 @@ func (n *HTTPRequest) Execute(ctx context.Context, input nodestore.MessageInterf
 		case []byte:
 			body = bytes.NewReader(v)
 		default:
-			jsonData, err := json.Marshal(v)
+			jsonData, err := nodebase.PayloadBytes(v)
 			if err != nil {
 				return nil, fmt.Errorf("failed to marshal request body: %w", err)
 			}
