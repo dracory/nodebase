@@ -49,7 +49,7 @@ var schema = map[string]interface{}{
 	"properties": map[string]interface{}{
 		"signal": map[string]interface{}{
 			"type": "string", "title": "Release Signal",
-			"description": "Fixed text or a mustache template such as {{payload.id}}; the evaluated non-empty value is the distributed signal key",
+			"description": "Fixed text or a mustache template such as {{payload.id}}; the evaluated value is trimmed and becomes the global distributed signal key; keys are case-sensitive and shared across workflows",
 		},
 		"cacheKeys": map[string]interface{}{
 			"type": "string", "title": "Metadata Keys To Cache",

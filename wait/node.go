@@ -51,7 +51,7 @@ var schema = map[string]interface{}{
 	"properties": map[string]interface{}{
 		"signal": map[string]interface{}{
 			"type": "string", "title": "Release Signal",
-			"description": "Fixed text or a mustache template such as {{payload.id}}; the evaluated non-empty value is the distributed signal key",
+			"description": "Fixed text or a mustache template such as {{payload.id}}; the evaluated value is trimmed and becomes the global distributed signal key; keys are case-sensitive and shared across workflows",
 		},
 		"targetCount": map[string]interface{}{
 			"type": "string", "title": "Target Signal Count", "default": "1",
@@ -162,7 +162,13 @@ func (n *Node) Validate() error {
 	if err := validateConfig(n.cfg); err != nil {
 		return err
 	}
-	_, err := nodebase.ResolveCoordinationStore(n.host)
+	if _, err := nodebase.ResolveCoordinationStore(n.host); err != nil {
+		return err
+	}
+	// Releasing a parked row is only safe when the host can prove the
+	// downstream handoff is durable. Ordinary fire-and-forget Emit is not
+	// accepted at this boundary.
+	_, err := nodebase.ResolveCoordinationDurableEmitter(n.host)
 	return err
 }
 
@@ -335,6 +341,7 @@ func (n *Node) pollOnce(ctx context.Context) {
 	for _, waiter := range expired {
 		msg := waiter.Message
 		if msg == nil {
+			n.discardEmptyClaim(ctx, store, waiter)
 			continue
 		}
 		metadata := msg.GetMetadata()
@@ -344,13 +351,12 @@ func (n *Node) pollOnce(ctx context.Context) {
 		nodebase.SetPath(metadata, "wait.signal", waiter.SignalKey)
 		nodebase.SetPath(metadata, "wait.expired", true)
 		msg.SetMetadata(metadata)
-		if err := n.host.Emit(n.workflowID, n.GetID(), msg, []string{"output_2"}); err != nil && ctx.Err() == nil {
-			n.host.EmitEvent(n.workflowID, n.GetID(), nodebase.NodeName(n.NodeInterface), "error", "expired wait emission failed: "+err.Error())
-		}
+		n.deliverClaimedWaiter(ctx, store, waiter, msg, "output_2", "expired")
 	}
 	for _, waiter := range released {
 		msg := waiter.Message
 		if msg == nil {
+			n.discardEmptyClaim(ctx, store, waiter)
 			continue
 		}
 		mergeCachedMetadata(msg, waiter.CachedMetadata, n.cfg.MergeMode)
@@ -360,15 +366,52 @@ func (n *Node) pollOnce(ctx context.Context) {
 		}
 		nodebase.SetPath(metadata, "wait.signal", waiter.SignalKey)
 		msg.SetMetadata(metadata)
-		if err := n.host.Emit(n.workflowID, n.GetID(), msg, []string{"output_1"}); err != nil && ctx.Err() == nil {
-			n.host.EmitEvent(n.workflowID, n.GetID(), nodebase.NodeName(n.NodeInterface), "error", "released wait emission failed: "+err.Error())
-		}
+		n.deliverClaimedWaiter(ctx, store, waiter, msg, "output_1", "released")
 	}
 	// PollWaiters may return already-claimed rows together with a later
-	// store error. Those rows have been removed/count-consumed and are owned
-	// by this caller, so they are emitted above even when pollErr is non-nil.
+	// store error. Those rows are owned by this caller and are processed
+	// above even when pollErr is non-nil.
 	if pollErr != nil && ctx.Err() == nil {
 		n.host.EmitEvent(n.workflowID, n.GetID(), nodebase.NodeName(n.NodeInterface), "error", "wait poll failed: "+pollErr.Error())
+	}
+}
+
+// deliverClaimedWaiter performs the ownership handoff required by the
+// coordination contract: durable emission first, ack only after success,
+// nack on failure so the parked row is retried instead of lost.
+func (n *Node) deliverClaimedWaiter(ctx context.Context, store nodebase.CoordinationStore, waiter nodebase.CoordinationWaiter, msg nodestore.MessageInterface, port, label string) {
+	emit, err := nodebase.ResolveCoordinationDurableEmitter(n.host)
+	if err == nil {
+		err = emit(n.workflowID, n.GetID(), msg, []string{port})
+	}
+	if err != nil {
+		nackErr := store.NackWaiter(ctx, waiter.ID, waiter.ClaimToken)
+		detail := label + " wait durable emission failed: " + err.Error()
+		if nackErr != nil {
+			detail += "; waiter remains leased until claim expiry because requeue failed: " + nackErr.Error()
+		} else {
+			detail += "; waiter requeued for retry"
+		}
+		if ctx.Err() == nil {
+			n.host.EmitEvent(n.workflowID, n.GetID(), nodebase.NodeName(n.NodeInterface), "error", detail)
+		}
+		return
+	}
+	if err := store.AckWaiter(ctx, waiter.ID, waiter.ClaimToken); err != nil && ctx.Err() == nil {
+		// The downstream handoff succeeded, so do not nack into a fast retry.
+		// If the row truly remains, lease expiry may cause a duplicate — the
+		// documented at-least-once outcome — but never a silent loss.
+		n.host.EmitEvent(n.workflowID, n.GetID(), nodebase.NodeName(n.NodeInterface), "error", label+" wait acknowledgement failed after durable emission; duplicate retry is possible: "+err.Error())
+	}
+}
+
+func (n *Node) discardEmptyClaim(ctx context.Context, store nodebase.CoordinationStore, waiter nodebase.CoordinationWaiter) {
+	if err := store.AckWaiter(ctx, waiter.ID, waiter.ClaimToken); err != nil && ctx.Err() == nil {
+		n.host.EmitEvent(n.workflowID, n.GetID(), nodebase.NodeName(n.NodeInterface), "error", "empty claimed waiter could not be acknowledged: "+err.Error())
+		return
+	}
+	if ctx.Err() == nil {
+		n.host.EmitEvent(n.workflowID, n.GetID(), nodebase.NodeName(n.NodeInterface), "error", "claimed waiter had no message envelope and was discarded")
 	}
 }
 

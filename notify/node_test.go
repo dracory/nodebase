@@ -51,6 +51,14 @@ func (s *memoryCoordinationStore) PollWaiters(ctx context.Context, workflowID, n
 	return nil, nil, nil
 }
 
+func (s *memoryCoordinationStore) AckWaiter(ctx context.Context, waiterID, claimToken string) error {
+	return nil
+}
+
+func (s *memoryCoordinationStore) NackWaiter(ctx context.Context, waiterID, claimToken string) error {
+	return nil
+}
+
 func (s *memoryCoordinationStore) Signal(ctx context.Context, key string) (nodebase.CoordinationSignal, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

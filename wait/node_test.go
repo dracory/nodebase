@@ -13,15 +13,17 @@ import (
 )
 
 type memoryCoordinationStore struct {
-	mu      sync.Mutex
-	signals map[string]nodebase.CoordinationSignal
-	waiters map[string]nodebase.CoordinationWaiter
+	mu       sync.Mutex
+	signals  map[string]nodebase.CoordinationSignal
+	waiters  map[string]nodebase.CoordinationWaiter
+	outcomes map[string]string
 }
 
 func newMemoryCoordinationStore() *memoryCoordinationStore {
 	return &memoryCoordinationStore{
-		signals: map[string]nodebase.CoordinationSignal{},
-		waiters: map[string]nodebase.CoordinationWaiter{},
+		signals:  map[string]nodebase.CoordinationSignal{},
+		waiters:  map[string]nodebase.CoordinationWaiter{},
+		outcomes: map[string]string{},
 	}
 }
 
@@ -51,31 +53,71 @@ func (s *memoryCoordinationStore) ParkWaiter(ctx context.Context, waiter nodebas
 func (s *memoryCoordinationStore) PollWaiters(ctx context.Context, workflowID, nodeID string) ([]nodebase.CoordinationWaiter, []nodebase.CoordinationWaiter, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := time.Now().UTC()
 	var released, expired []nodebase.CoordinationWaiter
 	for id, waiter := range s.waiters {
 		if waiter.WorkflowID != workflowID || waiter.NodeID != nodeID {
 			continue
 		}
-		if !waiter.ExpiresAt.IsZero() && !waiter.ExpiresAt.After(time.Now().UTC()) {
+		if waiter.ClaimToken != "" && waiter.ClaimExpiresAt.After(now) {
+			continue
+		}
+		outcome := s.outcomes[id]
+		if outcome == "" {
+			if !waiter.ExpiresAt.IsZero() && !waiter.ExpiresAt.After(now) {
+				outcome = "expired"
+				s.outcomes[id] = outcome
+			} else {
+				signal := s.signals[waiter.SignalKey]
+				if signal.Count < waiter.TargetCount {
+					continue
+				}
+				signal.Count -= waiter.TargetCount
+				waiter.CachedMetadata = copyMetadata(signal.Metadata)
+				if signal.Count == 0 {
+					delete(s.signals, waiter.SignalKey)
+				} else {
+					s.signals[waiter.SignalKey] = signal
+				}
+				outcome = "released"
+				s.outcomes[id] = outcome
+			}
+		}
+		waiter.ClaimToken = nodebase.GenerateID()
+		waiter.ClaimExpiresAt = now.Add(time.Minute)
+		s.waiters[id] = waiter
+		if outcome == "expired" {
 			expired = append(expired, waiter)
-			delete(s.waiters, id)
-			continue
-		}
-		signal := s.signals[waiter.SignalKey]
-		if signal.Count < waiter.TargetCount {
-			continue
-		}
-		signal.Count -= waiter.TargetCount
-		waiter.CachedMetadata = copyMetadata(signal.Metadata)
-		if signal.Count == 0 {
-			delete(s.signals, waiter.SignalKey)
 		} else {
-			s.signals[waiter.SignalKey] = signal
+			released = append(released, waiter)
 		}
-		released = append(released, waiter)
-		delete(s.waiters, id)
 	}
 	return released, expired, nil
+}
+
+func (s *memoryCoordinationStore) AckWaiter(ctx context.Context, waiterID, claimToken string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	waiter, ok := s.waiters[waiterID]
+	if !ok || waiter.ClaimToken != claimToken {
+		return errors.New("claim not owned")
+	}
+	delete(s.waiters, waiterID)
+	delete(s.outcomes, waiterID)
+	return nil
+}
+
+func (s *memoryCoordinationStore) NackWaiter(ctx context.Context, waiterID, claimToken string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	waiter, ok := s.waiters[waiterID]
+	if !ok || waiter.ClaimToken != claimToken {
+		return errors.New("claim not owned")
+	}
+	waiter.ClaimToken = ""
+	waiter.ClaimExpiresAt = time.Time{}
+	s.waiters[waiterID] = waiter
+	return nil
 }
 
 func (s *memoryCoordinationStore) Signal(ctx context.Context, key string) (nodebase.CoordinationSignal, bool, error) {
@@ -118,6 +160,7 @@ type fakeHost struct {
 	emitted []emitRecord
 	runCtx  context.Context
 	cancel  context.CancelFunc
+	emitErr error
 }
 
 func newFakeHost(store nodebase.CoordinationStore) *fakeHost {
@@ -132,6 +175,16 @@ func (h *fakeHost) Emit(wf, nodeID string, msg nodestore.MessageInterface, ports
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.emitted = append(h.emitted, emitRecord{msg: msg, ports: append([]string(nil), ports...)})
+	return nil
+}
+func (h *fakeHost) EmitDurable(wf, nodeID string, msg nodestore.MessageInterface, ports []string) error {
+	h.mu.Lock()
+	if err := h.emitErr; err != nil {
+		h.mu.Unlock()
+		return err
+	}
+	h.emitted = append(h.emitted, emitRecord{msg: msg, ports: append([]string(nil), ports...)})
+	h.mu.Unlock()
 	return nil
 }
 func (h *fakeHost) GetOrCreateNodeState(wf, nodeID string, factory func() interface{}) interface{} {
@@ -350,4 +403,76 @@ func TestWaitPollEmitsClaimedRowsReturnedWithError(t *testing.T) {
 	if len(records) != 1 || records[0].msg != msg {
 		t.Fatalf("claimed row returned with an error must still be emitted: %+v", records)
 	}
+}
+
+func TestWaitPollRequeuesFailedDurableEmissionAndRetries(t *testing.T) {
+	t.Run("released", func(t *testing.T) {
+		store := newMemoryCoordinationStore()
+		host := newFakeHost(store)
+		defer host.cancel()
+		node := waitTestNode(waitConfig(), host)
+		msg := nodestore.NewMessage().SetPayload(map[string]interface{}{"id": "42", "count": 1})
+		if _, err := node.Execute(context.Background(), msg); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.IncrementSignal(context.Background(), "job-42", map[string]interface{}{"worker": "alpha"}, 0); err != nil {
+			t.Fatal(err)
+		}
+
+		host.emitErr = errors.New("forced durable emit failure")
+		node.pollOnce(context.Background())
+		if got := len(host.emittedRecords()); got != 0 {
+			t.Fatalf("failed durable emission must not be recorded as delivered, got %d", got)
+		}
+		waiters, err := store.Waiters(context.Background(), "wf", "w1")
+		if err != nil || len(waiters) != 1 {
+			t.Fatalf("failed emission lost or duplicated waiter: len=%d err=%v", len(waiters), err)
+		}
+
+		host.emitErr = nil
+		node.pollOnce(context.Background())
+		emitted := host.emittedRecords()
+		if len(emitted) != 1 || len(emitted[0].ports) != 1 || emitted[0].ports[0] != "output_1" {
+			t.Fatalf("retry did not emit on output_1: %#v", emitted)
+		}
+		waiters, err = store.Waiters(context.Background(), "wf", "w1")
+		if err != nil || len(waiters) != 0 {
+			t.Fatalf("successful retry must acknowledge waiter: len=%d err=%v", len(waiters), err)
+		}
+	})
+
+	t.Run("expired", func(t *testing.T) {
+		store := newMemoryCoordinationStore()
+		host := newFakeHost(store)
+		defer host.cancel()
+		node := waitTestNode(waitConfig(), host)
+		msg := nodestore.NewMessage().SetPayload(map[string]interface{}{"id": "42", "count": 1})
+		if err := store.ParkWaiter(context.Background(), nodebase.CoordinationWaiter{
+			ID: "expired-unit", SignalKey: "job-42", WorkflowID: "wf", NodeID: "w1", TargetCount: 1,
+			Message: msg, CreatedAt: time.Now().UTC().Add(-2 * time.Second), ExpiresAt: time.Now().UTC().Add(-time.Second),
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		host.emitErr = errors.New("forced durable emit failure")
+		node.pollOnce(context.Background())
+		if got := len(host.emittedRecords()); got != 0 {
+			t.Fatalf("failed expired emission must not be recorded as delivered, got %d", got)
+		}
+		waiters, err := store.Waiters(context.Background(), "wf", "w1")
+		if err != nil || len(waiters) != 1 {
+			t.Fatalf("failed expired emission lost waiter: len=%d err=%v", len(waiters), err)
+		}
+
+		host.emitErr = nil
+		node.pollOnce(context.Background())
+		emitted := host.emittedRecords()
+		if len(emitted) != 1 || len(emitted[0].ports) != 1 || emitted[0].ports[0] != "output_2" {
+			t.Fatalf("expired retry did not emit on output_2: %#v", emitted)
+		}
+		waiters, err = store.Waiters(context.Background(), "wf", "w1")
+		if err != nil || len(waiters) != 0 {
+			t.Fatalf("successful expired retry must acknowledge waiter: len=%d err=%v", len(waiters), err)
+		}
+	})
 }
