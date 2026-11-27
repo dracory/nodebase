@@ -8,7 +8,7 @@ require (
 	github.com/dop251/goja v0.0.0-20261124180248-00ef7861e082
 	github.com/dracory/llm v1.10.0
 	github.com/dracory/neat v0.62.2
-	github.com/dracory/nodestore v0.3.1
+	github.com/dracory/nodestore v0.5.1
 	github.com/eclipse/paho.mqtt.golang v1.5.2
 	github.com/emersion/go-imap v1.2.1
 	github.com/jlaffaye/ftp v0.2.4
