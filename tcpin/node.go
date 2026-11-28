@@ -290,9 +290,16 @@ func (n *TCPInNode) dial(host string) (net.Conn, error) {
 		if err != nil {
 			return nil, err
 		}
+		if cfg == nil {
+			return nil, fmt.Errorf("tcpIn tls config %q resolved empty", n.config.TLS)
+		}
 		if cfg.ServerName == "" {
-			cfg = cfg.Clone()
-			cfg.ServerName = host
+			cloned := cfg.Clone()
+			if cloned == nil {
+				return nil, fmt.Errorf("tcpIn tls config %q could not be cloned", n.config.TLS)
+			}
+			cloned.ServerName = host
+			cfg = cloned
 		}
 		return tls.Dial("tcp", addr, cfg)
 	}
@@ -311,7 +318,12 @@ func (n *TCPInNode) acceptLoop() {
 		if err != nil {
 			return // listener closed (Stop) or fatal — either way we exit
 		}
-		n.sess.Put(conn.RemoteAddr().String(), conn)
+		remote := conn.RemoteAddr()
+		if remote == nil {
+			_ = conn.Close()
+			continue
+		}
+		n.sess.Put(remote.String(), conn)
 		go n.readLoop(conn)
 	}
 }
@@ -333,13 +345,16 @@ func (n *TCPInNode) payload(b []byte) interface{} {
 // each piece downstream via the host's fire-and-forget emit path. On
 // close the connection is removed from the session map.
 func (n *TCPInNode) readLoop(conn net.Conn) {
+	remote := ""
+	if addr := conn.RemoteAddr(); addr != nil {
+		remote = addr.String()
+	}
 	defer func() {
-		key := conn.RemoteAddr().String()
-		n.sess.DeleteIf(key, conn)
+		n.sess.DeleteIf(remote, conn)
 		_ = conn.Close()
 	}()
 
-	host, portStr, _ := net.SplitHostPort(conn.RemoteAddr().String())
+	host, portStr, _ := net.SplitHostPort(remote)
 	emit := func(data []byte) {
 		metadata := map[string]interface{}{
 			"ip":   host,

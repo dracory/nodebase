@@ -107,7 +107,10 @@ func TestTCPOutDial(t *testing.T) {
 }
 
 func TestTCPOutDialFailure(t *testing.T) {
-	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("probe listen failed: %v", err)
+	}
 	port := ln.Addr().(*net.TCPAddr).Port
 	ln.Close() // refuse connections
 	n := newNode(&TCPOutConfig{Host: "127.0.0.1", Port: port}, &fakeHost{})
@@ -281,7 +284,10 @@ func TestTCPOutServerBroadcast(t *testing.T) {
 	host := &fakeHost{}
 	n := newNode(&TCPOutConfig{Beserver: "server", Port: 0}, host)
 	// Port 0 won't pass Validate; pick a real free port.
-	probe, _ := net.Listen("tcp", "127.0.0.1:0")
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("probe listen failed: %v", err)
+	}
 	port := probe.Addr().(*net.TCPAddr).Port
 	probe.Close()
 	n.config.Port = port

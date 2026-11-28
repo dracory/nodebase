@@ -232,6 +232,9 @@ func (n *HTMLNode) Expand(output nodestore.MessageInterface) []nodestore.Message
 	out := make([]nodestore.MessageInterface, 0, count)
 	for i, v := range n.matches {
 		p := nodebase.ClonePayload(output)
+		if p == nil {
+			continue
+		}
 		if p.GetMetadata() == nil {
 			p.SetMetadata(map[string]interface{}{})
 		}

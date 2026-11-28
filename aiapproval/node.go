@@ -124,6 +124,9 @@ func (n *ApprovalNode) Execute(ctx context.Context, input nodestore.MessageInter
 // SelectPorts kills the reply message after it resolved a pending
 // approval; request-resume messages go to output 1.
 func (n *ApprovalNode) SelectPorts(input, output nodestore.MessageInterface) []string {
+	if output == nil || output.GetMetadata() == nil {
+		return nil
+	}
 	if _, ok := output.GetMetadata()[ReplyKey]; ok {
 		return nil
 	}

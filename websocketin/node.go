@@ -216,6 +216,9 @@ func (n *WebSocketInNode) executeServerMode() (nodestore.MessageInterface, error
 	if err != nil {
 		return nil, err
 	}
+	if state == nil || cfg == nil {
+		return nil, fmt.Errorf("websocket-listener %q resolved empty", n.config.Server)
+	}
 	if err := state.Attach(n.host); err != nil {
 		return nil, err
 	}
@@ -237,6 +240,9 @@ func (n *WebSocketInNode) executeClientMode() (nodestore.MessageInterface, error
 	state, cfg, err := nodebase.ResolveWSClient(n.host, n.workflowID, n.config.Client)
 	if err != nil {
 		return nil, err
+	}
+	if state == nil || cfg == nil {
+		return nil, fmt.Errorf("websocket-client %q resolved empty", n.config.Client)
 	}
 	state.Attach()
 	n.client = state

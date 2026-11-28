@@ -39,6 +39,9 @@ func TestDebugCompleteModes(t *testing.T) {
 	// complete=true: whole message incl metadata
 	n2 := newNode(map[string]interface{}{"complete": "true"})
 	ev2 := n2.PostRunEvents(n2.NodeInterface, msg)
+	if len(ev2) == 0 {
+		t.Fatal("complete=true should emit an event")
+	}
 	if !strings.Contains(ev2[0].Message, "payload") {
 		t.Fatalf("complete=true should render whole msg: %v", ev2)
 	}
@@ -46,6 +49,9 @@ func TestDebugCompleteModes(t *testing.T) {
 	// complete=false: Node-RED legacy spelling for "payload"
 	n3 := newNode(map[string]interface{}{"complete": "false"})
 	ev3 := n3.PostRunEvents(n3.NodeInterface, msg)
+	if len(ev3) == 0 {
+		t.Fatal("complete=false should emit an event")
+	}
 	if !strings.Contains(ev3[0].Message, `"a":1`) {
 		t.Fatalf("complete=false should render payload: %v", ev3)
 	}
@@ -53,6 +59,9 @@ func TestDebugCompleteModes(t *testing.T) {
 	// msg path into payload
 	n4 := newNode(map[string]interface{}{"complete": "payload.a"})
 	ev4 := n4.PostRunEvents(n4.NodeInterface, msg)
+	if len(ev4) == 0 {
+		t.Fatal("payload path should emit an event")
+	}
 	if ev4[0].Message != "1" {
 		t.Fatalf("payload path wrong: %v", ev4)
 	}
@@ -62,6 +71,9 @@ func TestDebugMetadataPath(t *testing.T) {
 	msg := nodestore.NewMessage().SetMetadata(map[string]interface{}{"topic": "t1"})
 	n := newNode(map[string]interface{}{"complete": "topic"})
 	ev := n.PostRunEvents(n.NodeInterface, msg)
+	if len(ev) == 0 {
+		t.Fatal("metadata path should emit an event")
+	}
 	if ev[0].Message != "t1" { // strings render bare, Node-RED style
 		t.Fatalf("metadata path wrong: %v", ev)
 	}

@@ -286,7 +286,10 @@ func TestTCPRequestNodeREDDecode(t *testing.T) {
 }
 
 func TestTCPRequestDialFailure(t *testing.T) {
-	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("probe listen failed: %v", err)
+	}
 	port := ln.Addr().(*net.TCPAddr).Port
 	ln.Close()
 	n := newNode(&TCPRequestConfig{Host: "127.0.0.1", Port: port, Timeout: 1}, &fakeHost{})

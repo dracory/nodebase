@@ -119,6 +119,9 @@ func TestCSVParseWithTemplate(t *testing.T) {
 		t.Fatalf("execute failed: %v", err)
 	}
 	parts := n.Expand(msg)
+	if len(parts) == 0 {
+		t.Fatal("expected at least one expanded row")
+	}
 	m, ok := parts[0].GetPayload().(map[string]interface{})
 	if !ok || m["kind"] != "Apple" || m["price"] != float64(100) || m["origin"] != "Canada" {
 		t.Fatalf("template-keyed row wrong: %v", parts[0].GetPayload())

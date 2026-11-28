@@ -262,6 +262,9 @@ func (n *HTTPRequest) Execute(ctx context.Context, input nodestore.MessageInterf
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
+	if resp == nil {
+		return nil, fmt.Errorf("request failed: empty response")
+	}
 	defer resp.Body.Close()
 
 	// Read response body, capped: an upstream can stream unbounded

@@ -578,6 +578,9 @@ func (n *JoinNode) reduceAndSend(msgs []nodestore.MessageInterface, count int) (
 		accum = v
 	}
 	out := nodebase.ClonePayload(last)
+	if out == nil {
+		return nil, fmt.Errorf("join: cannot clone empty reduce group")
+	}
 	out.SetPayload(accum)
 	return out, nil
 }
@@ -634,6 +637,9 @@ func (n *JoinNode) completeGroup(partID string, auto bool) nodestore.MessageInte
 	state.mu.Unlock()
 
 	out := nodebase.ClonePayload(group.msg)
+	if out == nil {
+		return nil
+	}
 	if out.GetMetadata() == nil {
 		out.SetMetadata(map[string]interface{}{})
 	}

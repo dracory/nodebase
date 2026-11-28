@@ -178,6 +178,9 @@ func ResolveMQTTOpts(host NodeHost, workflowID string, c *MQTTConnConfig) (*MQTT
 
 	brokerNode, isBrokerRef := lookupConfigNode(host, workflowID, strings.TrimSpace(c.Broker))
 	if isBrokerRef {
+		if brokerNode == nil {
+			return nil, fmt.Errorf("%s node %q not found", MQTTBrokerType, c.Broker)
+		}
 		if brokerNode.GetType() != MQTTBrokerType {
 			return nil, fmt.Errorf("node %q is type %q, not %s", c.Broker, brokerNode.GetType(), MQTTBrokerType)
 		}

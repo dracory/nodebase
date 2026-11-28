@@ -169,7 +169,7 @@ func TestRestartDecidedRecord(t *testing.T) {
 	h2.store = shared // durable backend survives the restart
 	n2 := NewApprovalNode(nodestore.NewNode("ap", Type), &Config{TimeoutSeconds: 5}, h2)
 	out, err := n2.Execute(context.Background(), request("msg-3"))
-	if err != nil {
+	if err != nil || out == nil {
 		t.Fatalf("restart resume failed: %v", err)
 	}
 	decision, _ := out.GetMetadata()[DecisionKey].(map[string]interface{})

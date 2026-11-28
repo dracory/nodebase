@@ -101,7 +101,7 @@ func TestExecRuns(t *testing.T) {
 	h := newFakeHost(true)
 	n := NewExecNode(nodestore.NewNode("e1", "exec"), &ExecConfig{Command: "echo hello"}, h)
 	out, err := n.Execute(context.Background(), nodestore.NewMessage())
-	if err != nil {
+	if err != nil || out == nil {
 		t.Fatalf("execute failed: %v", err)
 	}
 	if !strings.Contains(out.GetPayload().(string), "hello") {
@@ -160,7 +160,7 @@ func TestExecAddPayAppend(t *testing.T) {
 	n := NewExecNode(nodestore.NewNode("e1", "exec"), &ExecConfig{Command: "echo", AddPay: "payload", Append: "tail"}, h)
 	msg := nodestore.NewMessage().SetPayload("mid")
 	out, err := n.Execute(context.Background(), msg)
-	if err != nil {
+	if err != nil || out == nil {
 		t.Fatalf("execute failed: %v", err)
 	}
 	got := out.GetPayload().(string)
@@ -174,7 +174,7 @@ func TestExecAddPayTrue(t *testing.T) {
 	h := newFakeHost(true)
 	n := NewExecNode(nodestore.NewNode("e1", "exec"), &ExecConfig{Command: "echo", AddPay: true}, h)
 	out, err := n.Execute(context.Background(), nodestore.NewMessage().SetPayload("viapayload"))
-	if err != nil {
+	if err != nil || out == nil {
 		t.Fatalf("execute failed: %v", err)
 	}
 	if !strings.Contains(out.GetPayload().(string), "viapayload") {
@@ -200,7 +200,11 @@ func TestExecSpawnStreamsAndReportsCode(t *testing.T) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	var sawHi bool
-	for _, m := range h.emits["output_1"] {
+	e1 := h.emits["output_1"]
+	if e1 == nil {
+		t.Fatal("output_1 emits missing")
+	}
+	for _, m := range e1 {
 		if strings.Contains(m.GetPayload().(string), "hi") {
 			sawHi = true
 		}
@@ -208,9 +212,13 @@ func TestExecSpawnStreamsAndReportsCode(t *testing.T) {
 	if !sawHi {
 		t.Fatalf("stdout chunk missing: %v", h.emits)
 	}
-	p, ok := h.emits["output_3"][0].GetPayload().(map[string]interface{})
+	e3 := h.emits["output_3"]
+	if e3 == nil || len(e3) == 0 {
+		t.Fatalf("output_3 emit missing: %v", h.emits)
+	}
+	p, ok := e3[0].GetPayload().(map[string]interface{})
 	if !ok || p["code"] != 0 {
-		t.Fatalf("output_3 payload wrong: %v", h.emits["output_3"])
+		t.Fatalf("output_3 payload wrong: %v", e3)
 	}
 }
 
@@ -242,7 +250,11 @@ func TestExecKillSignal(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("kill never produced the output_3 close event")
 	}
-	p, _ := h.emits["output_3"][0].GetPayload().(map[string]interface{})
+	e3 := h.emits["output_3"]
+	if e3 == nil || len(e3) == 0 {
+		t.Fatal("output_3 emit missing")
+	}
+	p, _ := e3[0].GetPayload().(map[string]interface{})
 	if p["code"] != nil {
 		t.Fatalf("killed process should report code:null: %v", p)
 	}

@@ -370,6 +370,7 @@ func (n *BatchNode) executeConcat(input nodestore.MessageInterface) (nodestore.M
 // messages are collected before anything is removed, so a duplicated
 // topic concatenates the same group twice.
 func tryConcatLocked(state *batchState, topics []string) []nodestore.MessageInterface {
+	groups := make([]*topicGroup, 0, len(topics))
 	for _, topic := range topics {
 		tp := state.topics[topic]
 		if tp == nil || len(tp.gids) == 0 {
@@ -379,15 +380,15 @@ func tryConcatLocked(state *batchState, topics []string) []nodestore.MessageInte
 		if g == nil || g.count < 0 || len(g.msgs) < g.count {
 			return nil
 		}
+		groups = append(groups, g)
 	}
 	var out []nodestore.MessageInterface
-	for _, topic := range topics {
-		tp := state.topics[topic]
-		out = append(out, tp.groups[tp.gids[0]].msgs...)
+	for _, g := range groups {
+		out = append(out, g.msgs...)
 	}
 	for _, topic := range topics {
 		tp := state.topics[topic]
-		if len(tp.gids) == 0 {
+		if tp == nil || len(tp.gids) == 0 {
 			continue // duplicate topic already removed
 		}
 		delete(tp.groups, tp.gids[0])

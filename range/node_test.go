@@ -22,7 +22,7 @@ func scale(t *testing.T, cfg *RangeConfig, payload interface{}) (nodestore.Messa
 func TestRangeScale(t *testing.T) {
 	cfg := &RangeConfig{MinIn: 0, MaxIn: 100, MinOut: 0, MaxOut: 1}
 	msg, err := scale(t, cfg, 50.0)
-	if err != nil {
+	if err != nil || msg == nil {
 		t.Fatalf("execute failed: %v", err)
 	}
 	if got := msg.GetPayload(); got != 0.5 {
@@ -50,21 +50,33 @@ func TestRangeDrop(t *testing.T) {
 
 func TestRangeClampAndRoll(t *testing.T) {
 	cfg := &RangeConfig{Action: "clamp", MinIn: 0, MaxIn: 10, MinOut: 0, MaxOut: 10}
-	msg, _ := scale(t, cfg, 20.0)
+	msg, err := scale(t, cfg, 20.0)
+	if err != nil || msg == nil {
+		t.Fatalf("execute failed: %v", err)
+	}
 	if msg.GetPayload() != 10.0 {
 		t.Fatalf("clamp high wrong: %v", msg.GetPayload())
 	}
-	msg2, _ := scale(t, cfg, -5.0)
+	msg2, err := scale(t, cfg, -5.0)
+	if err != nil || msg2 == nil {
+		t.Fatalf("execute failed: %v", err)
+	}
 	if msg2.GetPayload() != 0.0 {
 		t.Fatalf("clamp low wrong: %v", msg2.GetPayload())
 	}
 
 	roll := &RangeConfig{Action: "roll", MinIn: 0, MaxIn: 10, MinOut: 0, MaxOut: 10}
-	msg3, _ := scale(t, roll, 12.0)
+	msg3, err := scale(t, roll, 12.0)
+	if err != nil || msg3 == nil {
+		t.Fatalf("execute failed: %v", err)
+	}
 	if msg3.GetPayload() != 2.0 {
 		t.Fatalf("roll wrong: %v", msg3.GetPayload())
 	}
-	msg4, _ := scale(t, roll, -3.0)
+	msg4, err := scale(t, roll, -3.0)
+	if err != nil || msg4 == nil {
+		t.Fatalf("execute failed: %v", err)
+	}
 	if msg4.GetPayload() != 7.0 {
 		t.Fatalf("roll negative wrong: %v", msg4.GetPayload())
 	}
@@ -72,7 +84,10 @@ func TestRangeClampAndRoll(t *testing.T) {
 
 func TestRangeRound(t *testing.T) {
 	cfg := &RangeConfig{MinIn: 0, MaxIn: 3, MinOut: 0, MaxOut: 10, Round: true}
-	msg, _ := scale(t, cfg, 1.0)
+	msg, err := scale(t, cfg, 1.0)
+	if err != nil || msg == nil {
+		t.Fatalf("execute failed: %v", err)
+	}
 	if msg.GetPayload() != 3.0 {
 		t.Fatalf("round wrong: %v", msg.GetPayload())
 	}
@@ -81,7 +96,10 @@ func TestRangeRound(t *testing.T) {
 func TestRangeZeroSpan(t *testing.T) {
 	cfg := &RangeConfig{MinIn: 5, MaxIn: 5, MinOut: 7, MaxOut: 9}
 	msg, err := scale(t, cfg, 5.0)
-	if err != nil || msg.GetPayload() != 7.0 {
+	if err != nil || msg == nil {
+		t.Fatalf("zero span execute failed: %v", err)
+	}
+	if msg.GetPayload() != 7.0 {
 		t.Fatalf("zero span should yield minout: %v", msg)
 	}
 }
@@ -108,7 +126,7 @@ func TestRangeNestedProperty(t *testing.T) {
 		"s": map[string]interface{}{"temp": 100.0},
 	})
 	out, err := newNode(cfg).Execute(context.Background(), msg)
-	if err != nil {
+	if err != nil || out == nil {
 		t.Fatalf("execute failed: %v", err)
 	}
 	got := out.GetPayload().(map[string]interface{})["s"].(map[string]interface{})["temp"]

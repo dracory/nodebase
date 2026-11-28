@@ -193,7 +193,7 @@ type Store struct {
 // resolved context store. store may be nil — the caller treats memory
 // as disabled then (host without a context seam).
 func OpenStore(store nodebase.ContextStore, memoryNodeID string, cfg *Config, key string) *Store {
-	if store == nil || key == "" {
+	if store == nil || cfg == nil || key == "" {
 		return nil
 	}
 	return &Store{store: store, scope: ScopeID(memoryNodeID), key: key, cfg: cfg}
@@ -207,7 +207,7 @@ func (s *Store) Load() ([]llm.Message, error) {
 		return nil, err
 	}
 	if !ok {
-		return nil, nil
+		return []llm.Message{}, nil
 	}
 	entries := decodeEntries(raw)
 	cutoff := time.Now().Unix()

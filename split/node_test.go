@@ -122,6 +122,9 @@ func TestSplitObject(t *testing.T) {
 func TestSplitAddname(t *testing.T) {
 	n := newNode(&SplitConfig{Addname: "idx"})
 	parts := expand(t, n, []interface{}{"x", "y"})
+	if len(parts) != 2 {
+		t.Fatalf("expected 2 parts, got %d", len(parts))
+	}
 	if parts[1].GetMetadata()["idx"] != 1 {
 		t.Fatalf("addname should carry the index: %v", parts[1].GetMetadata())
 	}

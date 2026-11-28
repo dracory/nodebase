@@ -277,6 +277,9 @@ func NewTriggerNode(node nodestore.NodeInterface, config *TriggerConfig, host no
 // equal to the configured reset value — clears the topic and drops
 // the message.
 func (n *TriggerNode) Execute(ctx context.Context, input nodestore.MessageInterface) (nodestore.MessageInterface, error) {
+	if input == nil {
+		return nil, fmt.Errorf("trigger node: nil input message")
+	}
 	state := n.state()
 	topic := n.topic(input)
 
@@ -311,6 +314,9 @@ func (n *TriggerNode) Execute(ctx context.Context, input nodestore.MessageInterf
 		}
 		// Each new message re-emits op1 and restarts the interval.
 		out := nodebase.ClonePayload(input)
+		if out == nil {
+			return nil, fmt.Errorf("trigger node: cannot clone input message")
+		}
 		out.SetPayload(n.opValue(n.config.Op1Type, n.config.Op1, input))
 		n.armLoop(state, topic, absDuration(delay, n.unit()), out)
 		return out, nil
@@ -321,6 +327,9 @@ func (n *TriggerNode) Execute(ctx context.Context, input nodestore.MessageInterf
 	}
 
 	out := nodebase.ClonePayload(input)
+	if out == nil {
+		return nil, fmt.Errorf("trigger node: cannot clone input message")
+	}
 	out.SetPayload(n.opValue(n.config.Op1Type, n.config.Op1, input))
 	return out, nil
 }
@@ -404,7 +413,7 @@ func (n *TriggerNode) pending(state *triggerState, topic string) bool {
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	ts, ok := state.topics[topic]
-	return ok && (ts.timer != nil || ts.blocked)
+	return ok && ts != nil && (ts.timer != nil || ts.blocked)
 }
 
 // markBlocked records the wait-to-be-reset sentinel for the topic.
@@ -504,6 +513,9 @@ func (n *TriggerNode) armOp2Timer(state *triggerState, topic string, delay time.
 	// Clone the input so an op2 "payload" type still resolves at fire
 	// time (Node-RED's pay: the message that armed the timer).
 	armed := nodebase.ClonePayload(input)
+	if armed == nil {
+		return
+	}
 	ts.timer = time.AfterFunc(delay, func() {
 		state.mu.Lock()
 		delete(state.topics, topic)

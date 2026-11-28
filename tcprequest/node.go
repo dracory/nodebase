@@ -390,9 +390,13 @@ func (n *TCPRequestNode) Execute(ctx context.Context, input nodestore.MessageInt
 	if err := conn.SetWriteDeadline(deadline); err != nil {
 		return nil, fmt.Errorf("tcpRequest write deadline failed: %w", err)
 	}
+	remote := ""
+	if addr := conn.RemoteAddr(); addr != nil {
+		remote = addr.String()
+	}
 	if _, err := conn.Write(data); err != nil {
 		n.drop(state)
-		return nil, fmt.Errorf("tcpRequest write to %s failed: %w", conn.RemoteAddr(), err)
+		return nil, fmt.Errorf("tcpRequest write to %s failed: %w", remote, err)
 	}
 
 	if r.mode == "immed" {
@@ -405,7 +409,7 @@ func (n *TCPRequestNode) Execute(ctx context.Context, input nodestore.MessageInt
 	reply, err := n.readReply(conn, deadline, r, state)
 	if err != nil {
 		n.drop(state)
-		return nil, fmt.Errorf("tcpRequest read from %s failed: %w", conn.RemoteAddr(), err)
+		return nil, fmt.Errorf("tcpRequest read from %s failed: %w", remote, err)
 	}
 	if reply == nil {
 		// sit mode: the buffered remainder carries no complete part
@@ -414,7 +418,7 @@ func (n *TCPRequestNode) Execute(ctx context.Context, input nodestore.MessageInt
 	}
 
 	metadata := nodebase.CloneMetadata(input)
-	if host, port, serr := net.SplitHostPort(conn.RemoteAddr().String()); serr == nil {
+	if host, port, serr := net.SplitHostPort(remote); serr == nil {
 		metadata["ip"] = host
 		metadata["port"] = port
 	}
@@ -549,7 +553,7 @@ func (n *TCPRequestNode) readSit(conn net.Conn, deadline time.Time, r resolved, 
 // readUntil reads until delim appears (and includes it) or the deadline
 // trips. io.ReadAll on a deadline cannot do this directly.
 func readUntil(conn net.Conn, delim []byte, deadline time.Time) ([]byte, error) {
-	var buf []byte
+	buf := make([]byte, 0, 4096)
 	tmp := make([]byte, 4096)
 	for {
 		if idx := bytes.Index(buf, delim); idx >= 0 {

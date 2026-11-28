@@ -152,16 +152,25 @@ func (n *Node) Execute(ctx context.Context, in nodestore.MessageInterface) (node
 func compressBytes(algorithm string, raw []byte) ([]byte, error) {
 	var buf bytes.Buffer
 	var w io.WriteCloser
+	var err error
 	switch algorithm {
 	case "gzip":
 		w = gzip.NewWriter(&buf)
 	case "zlib":
 		w = zlib.NewWriter(&buf)
 	case "flate":
-		w, _ = flate.NewWriter(&buf, flate.DefaultCompression)
+		w, err = flate.NewWriter(&buf, flate.DefaultCompression)
+		if err != nil {
+			return nil, fmt.Errorf("compress: %s compression setup failed: %w", algorithm, err)
+		}
+	default:
+		return nil, fmt.Errorf("compress: unsupported compression algorithm %q", algorithm)
+	}
+	if w == nil {
+		return nil, fmt.Errorf("compress: %s compression setup failed", algorithm)
 	}
 	if _, err := w.Write(raw); err != nil {
-		w.Close()
+		_ = w.Close()
 		return nil, fmt.Errorf("compress: %s compression failed: %w", algorithm, err)
 	}
 	if err := w.Close(); err != nil {

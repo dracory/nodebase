@@ -734,6 +734,9 @@ func cronNumbers(field string, lo, hi int) []int {
 			// full range
 		case strings.Contains(part, "-"):
 			bounds := strings.SplitN(part, "-", 2)
+			if len(bounds) != 2 {
+				continue
+			}
 			v1, e1 := strconv.Atoi(bounds[0])
 			v2, e2 := strconv.Atoi(bounds[1])
 			if e1 != nil || e2 != nil {

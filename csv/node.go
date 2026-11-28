@@ -257,6 +257,9 @@ func (n *CSVNode) Expand(output nodestore.MessageInterface) []nodestore.MessageI
 	out := make([]nodestore.MessageInterface, 0, count)
 	for i, row := range n.rows {
 		p := nodebase.ClonePayload(output)
+		if p == nil {
+			continue
+		}
 		if p.GetMetadata() == nil {
 			p.SetMetadata(map[string]interface{}{})
 		}

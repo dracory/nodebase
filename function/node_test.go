@@ -130,7 +130,7 @@ func TestFunctionReturnMsg(t *testing.T) {
 	host := newFakeHost()
 	n := newNode(`msg.payload = msg.payload * 2; return msg;`, host)
 	out, err := n.Execute(context.Background(), msg(3.0))
-	if err != nil {
+	if err != nil || out == nil {
 		t.Fatalf("execute failed: %v", err)
 	}
 	if fmt.Sprintf("%v", out.GetPayload()) != "6" {
@@ -179,7 +179,7 @@ func TestFunctionMultiOutput(t *testing.T) {
 	host := newFakeHost()
 	n := newNode(`return [null, {payload: "p2"}];`, host)
 	out, err := n.Execute(context.Background(), msg(1))
-	if err != nil {
+	if err != nil || out == nil {
 		t.Fatalf("execute failed: %v", err)
 	}
 	// port 0 skipped (null); the port-1 message is returned and routed
@@ -196,7 +196,7 @@ func TestFunctionNodeSend(t *testing.T) {
 	host := newFakeHost()
 	n := newNode(`node.send([{payload: "a"}, {payload: "b"}]); return null;`, host)
 	out, err := n.Execute(context.Background(), msg(1))
-	if err != nil {
+	if err != nil || out == nil {
 		t.Fatalf("execute failed: %v", err)
 	}
 	// first send on lowest port returns; other port emitted async
@@ -222,7 +222,7 @@ func TestFunctionContext(t *testing.T) {
 		}
 		return msg;`, host)
 	out, err := n.Execute(context.Background(), msg(nil))
-	if err != nil {
+	if err != nil || out == nil {
 		t.Fatalf("execute failed: %v", err)
 	}
 	if out.GetPayload() != "41x" {
@@ -239,7 +239,7 @@ func TestFunctionContext(t *testing.T) {
 		}
 		return msg;`, host)
 	out2, err := n2.Execute(context.Background(), msg(nil))
-	if err != nil {
+	if err != nil || out2 == nil {
 		t.Fatalf("second execute failed: %v", err)
 	}
 	if fmt.Sprintf("%v", out2.GetPayload()) != "[count]" {
@@ -252,7 +252,7 @@ func TestFunctionEnv(t *testing.T) {
 	host.env["MY_VAR"] = "seekrit"
 	n := newNode(`msg.payload = env.get("MY_VAR"); return msg;`, host)
 	out, err := n.Execute(context.Background(), msg(nil))
-	if err != nil {
+	if err != nil || out == nil {
 		t.Fatalf("execute failed: %v", err)
 	}
 	if out.GetPayload() != "seekrit" {
@@ -260,7 +260,10 @@ func TestFunctionEnv(t *testing.T) {
 	}
 	// missing env + no OSEnvAllowed → undefined (fails closed)
 	n2 := newNode(`msg.payload = String(env.get("NOPE") === undefined); return msg;`, host)
-	out2, _ := n2.Execute(context.Background(), msg(nil))
+	out2, err := n2.Execute(context.Background(), msg(nil))
+	if err != nil || out2 == nil {
+		t.Fatalf("execute failed: %v", err)
+	}
 	if out2.GetPayload() != "true" {
 		t.Fatal("env.get should fail closed without OSEnvAllowed")
 	}

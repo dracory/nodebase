@@ -91,7 +91,7 @@ func TestJoinAutoArray(t *testing.T) {
 		t.Fatal("first part should be buffered")
 	}
 	out, err = n.Execute(ctx, partMsg("g1", 0, 2, "a"))
-	if err != nil {
+	if err != nil || out == nil {
 		t.Fatalf("execute failed: %v", err)
 	}
 	arr, ok := out.GetPayload().([]interface{})
@@ -186,6 +186,9 @@ func TestJoinObjectUsesPartsKey(t *testing.T) {
 	}
 	n.Execute(context.Background(), mk("k1", "v1"))
 	out, _ := n.Execute(context.Background(), mk("k2", "v2"))
+	if out == nil {
+		t.Fatal("final object part should emit")
+	}
 	m := out.GetPayload().(map[string]interface{})
 	if m["k1"] != "v1" || m["k2"] != "v2" {
 		t.Fatalf("object join should use parts.key: %v", m)
@@ -324,6 +327,9 @@ func TestJoinPropertyPath(t *testing.T) {
 	}
 	n.Execute(ctx, mk(0, "a"))
 	out, _ := n.Execute(ctx, mk(1, "b"))
+	if out == nil {
+		t.Fatal("final part should emit")
+	}
 	m := out.GetPayload().(map[string]interface{})
 	arr := m["items"].([]interface{})
 	if len(arr) != 2 || arr[0] != "a" {
@@ -375,7 +381,7 @@ func TestJoinReduceRight(t *testing.T) {
 		t.Fatalf("first reduce-right part should buffer: out=%v err=%v", out, err)
 	}
 	out, err := n.Execute(ctx, partMsg("right-group", 1, 2, "b"))
-	if err != nil {
+	if err != nil || out == nil {
 		t.Fatalf("reduce-right execute failed: %v", err)
 	}
 	if out == nil {

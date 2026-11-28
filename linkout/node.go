@@ -87,6 +87,9 @@ type LinkOutNode struct {
 // "link") or resolves the caller at the top of the link call stack
 // (mode "return", consuming the message).
 func (n *LinkOutNode) Execute(ctx context.Context, input nodestore.MessageInterface) (nodestore.MessageInterface, error) {
+	if input == nil {
+		return nil, fmt.Errorf("linkOut: nil input message")
+	}
 	mode := n.config.Mode
 	if mode == "" {
 		mode = "link"
@@ -105,6 +108,9 @@ func (n *LinkOutNode) Execute(ctx context.Context, input nodestore.MessageInterf
 			continue
 		}
 		push := nodebase.ClonePayload(input)
+		if push == nil {
+			continue
+		}
 		if push.GetMetadata() == nil {
 			push.SetMetadata(map[string]interface{}{})
 		}
@@ -146,7 +152,7 @@ func (n *LinkOutNode) execReturn(input nodestore.MessageInterface) error {
 // in the same workflow.
 func (n *LinkOutNode) checkLinkInTarget(target string) error {
 	node, ok := n.host.LookupNode(n.workflowID, target)
-	if !ok {
+	if !ok || node == nil {
 		return fmt.Errorf("linkOut: link target %q not found in workflow", target)
 	}
 	if node.GetType() != "linkIn" {

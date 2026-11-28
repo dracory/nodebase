@@ -263,6 +263,9 @@ func splitArgs(arg string) []string {
 // process(es) and produces no output; otherwise the command runs —
 // buffered through the shell (exec mode) or as a streamed spawn.
 func (n *ExecNode) Execute(ctx context.Context, input nodestore.MessageInterface) (nodestore.MessageInterface, error) {
+	if input == nil {
+		return nil, errors.New("exec node: nil input message")
+	}
 	if n.host == nil || !n.host.ExecAllowed() {
 		return nil, errors.New("exec disabled: set AllowExec on the host")
 	}
@@ -334,9 +337,14 @@ func (n *ExecNode) executeBuffered(ctx context.Context, input nodestore.MessageI
 	var msg2, msg3 nodestore.MessageInterface
 	if s := stderr.String(); s != "" {
 		msg2 = nodebase.ClonePayload(input)
-		msg2.SetPayload(s)
+		if msg2 != nil {
+			msg2.SetPayload(s)
+		}
 	}
 	out := nodebase.ClonePayload(input)
+	if out == nil {
+		return nil, errors.New("exec node: cannot clone input message")
+	}
 	out.SetPayload(stdout.String())
 
 	// Node's child_process.exec surfaces failures as an error whose
@@ -355,10 +363,14 @@ func (n *ExecNode) executeBuffered(ctx context.Context, input nodestore.MessageI
 		}
 		rc["message"] = "Command failed: " + arg + "\n" + stderr.String()
 		msg3 = nodebase.ClonePayload(input)
-		msg3.SetPayload(rc)
+		if msg3 != nil {
+			msg3.SetPayload(rc)
+		}
 	} else if !n.config.OldRC {
 		msg3 = nodebase.ClonePayload(input)
-		msg3.SetPayload(map[string]interface{}{"code": 0})
+		if msg3 != nil {
+			msg3.SetPayload(map[string]interface{}{"code": 0})
+		}
 	}
 
 	if msg3 != nil {
@@ -417,8 +429,10 @@ func (n *ExecNode) executeSpawn(input nodestore.MessageInterface, st *execState,
 			nr, err := r.Read(buf)
 			if nr > 0 {
 				chunk := nodebase.ClonePayload(input)
-				chunk.SetPayload(string(buf[:nr]))
-				_ = n.host.Emit(n.workflowID, n.GetID(), chunk, []string{port})
+				if chunk != nil {
+					chunk.SetPayload(string(buf[:nr]))
+					_ = n.host.Emit(n.workflowID, n.GetID(), chunk, []string{port})
+				}
 			}
 			if err != nil {
 				return
@@ -437,6 +451,9 @@ func (n *ExecNode) executeSpawn(input nodestore.MessageInterface, st *execState,
 
 		code, signal := exitCodeAndSignal(cmd.ProcessState)
 		rc := nodebase.ClonePayload(input)
+		if rc == nil {
+			return
+		}
 		if n.config.OldRC {
 			rc.SetPayload(code)
 		} else {
@@ -504,6 +521,9 @@ func (n *ExecNode) procState() *execState {
 
 // setMetadataValue writes a metadata key, creating the map when needed.
 func setMetadataValue(msg nodestore.MessageInterface, key string, v interface{}) {
+	if msg == nil {
+		return
+	}
 	if msg.GetMetadata() == nil {
 		msg.SetMetadata(map[string]interface{}{})
 	}

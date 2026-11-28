@@ -100,6 +100,9 @@ func (n *WebSocketOutNode) Activate(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		if state == nil {
+			return fmt.Errorf("websocket-client %q resolved empty", n.config.Client)
+		}
 		state.Attach()
 		n.client = state
 		n.done = make(chan struct{})
@@ -110,6 +113,9 @@ func (n *WebSocketOutNode) Activate(ctx context.Context) error {
 		state, _, err := nodebase.ResolveWSListener(n.host, n.workflowID, n.config.Server)
 		if err != nil {
 			return err
+		}
+		if state == nil {
+			return fmt.Errorf("websocket-listener %q resolved empty", n.config.Server)
 		}
 		if err := state.Attach(n.host); err != nil {
 			return err

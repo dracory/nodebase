@@ -239,6 +239,9 @@ func (n *MailInNode) dial() (*imapclient.Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("mailIn cannot connect to %s:%d: %w", n.config.Host, port, err)
 	}
+	if c == nil {
+		return nil, fmt.Errorf("mailIn cannot connect to %s:%d: empty client", n.config.Host, port)
+	}
 	c.Timeout = 30 * time.Second
 	if err := c.Login(n.config.Username, n.config.Password); err != nil {
 		_ = c.Logout()

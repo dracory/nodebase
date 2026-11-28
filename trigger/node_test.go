@@ -337,7 +337,7 @@ func TestOpValueTypes(t *testing.T) {
 
 	trg, _ := newHostedNode(t, map[string]interface{}{"op1type": "date"})
 	out, err := trg.Execute(context.Background(), nodestore.NewMessage())
-	if err != nil {
+	if err != nil || out == nil {
 		t.Fatal(err)
 	}
 	ms, ok := out.GetPayload().(float64)
@@ -363,7 +363,7 @@ func TestOpValueTypes(t *testing.T) {
 
 	trg, _ = newHostedNode(t, map[string]interface{}{"op1type": "env", "op1": "TRIGGER_TEST_ENV"})
 	out, err = trg.Execute(context.Background(), nodestore.NewMessage())
-	if err != nil {
+	if err != nil || out == nil {
 		t.Fatal(err)
 	}
 	if out.GetPayload() != "envvalue" {

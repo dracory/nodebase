@@ -170,7 +170,7 @@ func TestTriggerValidate(t *testing.T) {
 func TestTriggerRoutePattern(t *testing.T) {
 	n := newNode(&HTTPTriggerConfig{Path: "u/:id"}, &fakeHost{})
 	pat, params := n.routePattern()
-	if pat != "/u/{id}" || params[0] != "id" {
+	if pat != "/u/{id}" || len(params) != 1 || params[0] != "id" {
 		t.Fatalf("pattern wrong: %q %v", pat, params)
 	}
 }

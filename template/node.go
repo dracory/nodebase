@@ -249,7 +249,11 @@ func (n *TemplateNode) writeTarget(input nodestore.MessageInterface, value inter
 			scope, scopeID = nodebase.ContextScopeGlobal, ""
 		}
 		_ = store // named persistable stores unsupported: single store
-		_ = n.host.ResolvedContextStore().SetContext(scope, scopeID, key, value)
+		contextStore := n.host.ResolvedContextStore()
+		if contextStore == nil {
+			return
+		}
+		_ = contextStore.SetContext(scope, scopeID, key, value)
 	default: // "msg"
 		if field == "payload" {
 			input.SetPayload(value)
@@ -419,7 +423,11 @@ func lookupContext(host nodebase.NodeHost, scope, scopeID, key string) (interfac
 	if host == nil {
 		return nil, false
 	}
-	v, ok, err := host.ResolvedContextStore().GetContext(scope, scopeID, key)
+	store := host.ResolvedContextStore()
+	if store == nil {
+		return nil, false
+	}
+	v, ok, err := store.GetContext(scope, scopeID, key)
 	if err != nil || !ok {
 		return nil, false
 	}

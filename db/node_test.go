@@ -86,7 +86,7 @@ func TestDBQueryRoundTrip(t *testing.T) {
 
 	ins := activated(t, dsn, "n1", &DBConfig{Operation: "exec", SQL: "INSERT INTO t (name) VALUES (?)", Params: []interface{}{"alice"}})
 	out, err := ins.Execute(context.Background(), nodestore.NewMessage())
-	if err != nil {
+	if err != nil || out == nil {
 		t.Fatalf("insert failed: %v", err)
 	}
 	res, _ := out.GetPayload().(map[string]interface{})
@@ -111,7 +111,7 @@ func TestDBSplitExpand(t *testing.T) {
 		Split: true,
 	})
 	out, err := n.Execute(context.Background(), nodestore.NewMessage())
-	if err != nil {
+	if err != nil || out == nil {
 		t.Fatalf("query failed: %v", err)
 	}
 	outs := n.Expand(out)

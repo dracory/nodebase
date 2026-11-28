@@ -319,9 +319,16 @@ func (n *TCPOutNode) dial() (net.Conn, error) {
 		if err != nil {
 			return nil, err
 		}
+		if cfg == nil {
+			return nil, fmt.Errorf("tcpOut tls config %q resolved empty", n.config.TLS)
+		}
 		if cfg.ServerName == "" {
-			cfg = cfg.Clone()
-			cfg.ServerName = host
+			cloned := cfg.Clone()
+			if cloned == nil {
+				return nil, fmt.Errorf("tcpOut tls config %q could not be cloned", n.config.TLS)
+			}
+			cloned.ServerName = host
+			cfg = cloned
 		}
 		conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 10 * time.Second}, "tcp", addr, cfg)
 		if err != nil {
@@ -381,7 +388,7 @@ func (n *TCPOutNode) reply(input nodestore.MessageInterface, data []byte) (nodes
 	}
 	key := net.JoinHostPort(ip, port)
 	conn, ok := sessions.Get(key)
-	if !ok {
+	if !ok || conn == nil {
 		return nil, fmt.Errorf("tcpOut: no open session for %s", key)
 	}
 	if _, err := conn.Write(data); err != nil {

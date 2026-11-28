@@ -435,7 +435,7 @@ func ResolveWSListener(host NodeHost, workflowID, ref string) (*WSListenerState,
 		return nil, nil, nil
 	}
 	node, ok := lookupConfigNode(host, workflowID, ref)
-	if !ok {
+	if !ok || node == nil {
 		return nil, nil, fmt.Errorf("websocket-listener %q not found in workflow", ref)
 	}
 	if node.GetType() != WebSocketListenerType {
@@ -475,7 +475,7 @@ func ResolveWSClient(host NodeHost, workflowID, ref string) (*WSClientState, *WS
 		return nil, nil, nil
 	}
 	node, ok := lookupConfigNode(host, workflowID, ref)
-	if !ok {
+	if !ok || node == nil {
 		return nil, nil, fmt.Errorf("websocket-client %q not found in workflow", ref)
 	}
 	if node.GetType() != WebSocketClientType {

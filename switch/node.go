@@ -389,6 +389,9 @@ func (n *SwitchNode) emitRepaired(group []queuedMsg) {
 			}
 			for i, msg := range subset {
 				em := nodebase.ClonePayload(msg)
+				if em == nil {
+					continue
+				}
 				if em.GetMetadata() == nil {
 					em.SetMetadata(map[string]interface{}{})
 				}

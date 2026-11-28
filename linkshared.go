@@ -28,7 +28,7 @@ const DefaultLinkCallFunctionTimeout = 5 * time.Second
 // Since this engine folds every Node-RED tab into one workflow, the
 // flow-scoped and global lookups are the same scan.
 func ResolveLinkInTarget(host NodeHost, workflowID, target string, dynamic bool) (string, error) {
-	if node, ok := host.LookupNode(workflowID, target); ok {
+	if node, ok := host.LookupNode(workflowID, target); ok && node != nil {
 		if node.GetType() != "linkIn" {
 			return "", fmt.Errorf("target link-in node '%s' not found", target)
 		}
@@ -63,6 +63,9 @@ func ResolveLinkInTarget(host NodeHost, workflowID, target string, dynamic bool)
 // The message's link call stack gets the caller's entry appended
 // before injection (mirroring Node-RED's msg._linkSource push).
 func LinkCallInto(host NodeHost, workflowID, callerID, target string, msg nodestore.MessageInterface, timeout time.Duration) (nodestore.MessageInterface, error) {
+	if msg == nil {
+		return nil, fmt.Errorf("linkCall: nil message")
+	}
 	if msg.GetMetadata() == nil {
 		msg.SetMetadata(map[string]interface{}{})
 	}

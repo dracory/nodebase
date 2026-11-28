@@ -75,12 +75,18 @@ func TestStoreRoundTripAndWindowCap(t *testing.T) {
 	// A second store over the same backend sees the same history —
 	// the "engine restart" path.
 	s2 := OpenStore(cs, "m1", cfg, "c1")
+	if s2 == nil {
+		t.Fatal("store must reopen")
+	}
 	msgs2, _ := s2.Load()
 	if len(msgs2) != 3 {
 		t.Fatal("history did not persist across store rebind")
 	}
 	// Different conversation key = isolated history.
 	s3 := OpenStore(cs, "m1", cfg, "c2")
+	if s3 == nil {
+		t.Fatal("foreign conversation store must open")
+	}
 	msgs3, _ := s3.Load()
 	if len(msgs3) != 0 {
 		t.Fatal("foreign conversation leaked history")

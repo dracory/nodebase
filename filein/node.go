@@ -191,6 +191,9 @@ func (n *FileInNode) Expand(output nodestore.MessageInterface) []nodestore.Messa
 	out := make([]nodestore.MessageInterface, 0, count)
 	for i, chunk := range n.chunks {
 		p := nodebase.ClonePayload(output)
+		if p == nil {
+			continue
+		}
 		if p.GetMetadata() == nil {
 			p.SetMetadata(map[string]interface{}{})
 		}

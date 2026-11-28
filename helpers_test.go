@@ -296,6 +296,9 @@ func TestClonePayload(t *testing.T) {
 		SetPayload(map[string]interface{}{"k": "v"}).
 		SetMetadata(map[string]interface{}{"h": "x"})
 	clone := ClonePayload(src)
+	if clone == nil {
+		t.Fatal("clone must not be nil")
+	}
 	if clone.GetID() == "m1" {
 		t.Fatal("clone must get a fresh id")
 	}
@@ -309,6 +312,9 @@ func TestClonePayload(t *testing.T) {
 	}
 	bin := nodestore.NewMessage().SetPayload([]byte{1, 2, 3})
 	bc := ClonePayload(bin)
+	if bc == nil {
+		t.Fatal("binary clone must not be nil")
+	}
 	b, ok := bc.GetPayload().([]byte)
 	if !ok || len(b) != 3 {
 		t.Fatalf("binary payload must survive clone: %T", bc.GetPayload())
@@ -322,6 +328,9 @@ func TestClonePayload(t *testing.T) {
 		"list": []interface{}{[]byte{3, 4}},
 	})
 	nc := ClonePayload(nested)
+	if nc == nil {
+		t.Fatal("nested clone must not be nil")
+	}
 	nm, ok := nc.GetPayload().(map[string]interface{})
 	if !ok {
 		t.Fatalf("nested payload clone is %T", nc.GetPayload())
@@ -344,12 +353,20 @@ func TestClonePayload(t *testing.T) {
 	}
 	// error carried over
 	src.SetError("boom")
-	if c := ClonePayload(src); c.GetError() == nil || *c.GetError() != "boom" {
+	c := ClonePayload(src)
+	if c == nil {
+		t.Fatal("error clone must not be nil")
+	}
+	if c.GetError() == nil || *c.GetError() != "boom" {
 		t.Fatal("clone should carry the error")
 	}
 	// non-JSON payload shared rather than dropped
 	fn := nodestore.NewMessage().SetPayload(func() {})
-	if c := ClonePayload(fn); c.GetPayload() == nil {
+	fc := ClonePayload(fn)
+	if fc == nil {
+		t.Fatal("function clone must not be nil")
+	}
+	if fc.GetPayload() == nil {
 		t.Fatal("non-JSON payload should be shared, not dropped")
 	}
 }

@@ -222,7 +222,7 @@ func (n *AgentNode) Execute(ctx context.Context, input nodestore.MessageInterfac
 	if err != nil {
 		return nil, err
 	}
-	var history []llm.Message
+	history := []llm.Message{}
 	if memory != nil {
 		if history, err = memory.Load(); err != nil {
 			return nil, fmt.Errorf("ai-agent: memory load failed: %w", err)
@@ -295,8 +295,10 @@ func (n *AgentNode) Execute(ctx context.Context, input nodestore.MessageInterfac
 	}
 
 	if memory != nil {
-		newTurns := append([]llm.Message{{Role: llm.RoleUser, Content: userPrompt}},
-			messages[len(history):]...)
+		newTurns := []llm.Message{{Role: llm.RoleUser, Content: userPrompt}}
+		for i := len(history); i < len(messages); i++ {
+			newTurns = append(newTurns, messages[i])
+		}
 		if err := memory.Append(newTurns...); err != nil {
 			n.event("warn", fmt.Sprintf("memory save failed: %v", err))
 		}
@@ -368,7 +370,7 @@ func (n *AgentNode) resolveTools() ([]toolTarget, error) {
 			return nil, fmt.Errorf("ai-agent: %w", err)
 		}
 		node, ok := n.host.LookupNode(wf, nodeID)
-		if !ok {
+		if !ok || node == nil {
 			return nil, fmt.Errorf("ai-agent: tool %q not found in workflow %q", nodeID, wf)
 		}
 		decl, err := aitool.ToolForNode(node)
@@ -452,7 +454,7 @@ func (n *AgentNode) openMemory(input nodestore.MessageInterface) (*aimemory.Stor
 		return nil, fmt.Errorf("ai-agent: no host — cannot resolve ai-memory %q", n.config.Memory)
 	}
 	node, ok := n.host.LookupNode(n.workflowID, n.config.Memory)
-	if !ok {
+	if !ok || node == nil {
 		return nil, fmt.Errorf("ai-agent: ai-memory %q not found in workflow", n.config.Memory)
 	}
 	cfg, err := aimemory.ConfigForNode(node)

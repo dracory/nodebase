@@ -222,6 +222,9 @@ func (n *DBNode) Activate(ctx context.Context) error {
 
 // Execute runs the configured statement against the pool.
 func (n *DBNode) Execute(ctx context.Context, input nodestore.MessageInterface) (nodestore.MessageInterface, error) {
+	if input == nil {
+		return nil, errors.New("db node: nil input message")
+	}
 	st := n.state()
 	st.mu.Lock()
 	db := st.db
@@ -242,6 +245,9 @@ func (n *DBNode) Execute(ctx context.Context, input nodestore.MessageInterface) 
 	statement := rebindPlaceholders(n.config.SQL, neatdriver.GetPlaceholderFunc(dialect))
 
 	out := nodebase.ClonePayload(input)
+	if out == nil {
+		return nil, errors.New("db node: cannot clone nil input message")
+	}
 	if dbOperation(n.config.Operation) == "exec" {
 		res, err := sqlDB.ExecContext(ctx, statement, args...)
 		if err != nil {
@@ -292,6 +298,9 @@ func (n *DBNode) Expand(output nodestore.MessageInterface) []nodestore.MessageIn
 	outs := make([]nodestore.MessageInterface, 0, len(n.splitRows))
 	for i, row := range n.splitRows {
 		p := nodebase.ClonePayload(n.splitProto)
+		if p == nil {
+			continue
+		}
 		p.SetPayload(row)
 		if p.GetMetadata() == nil {
 			p.SetMetadata(map[string]interface{}{})
