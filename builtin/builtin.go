@@ -74,6 +74,7 @@ import (
 	_ "github.com/dracory/nodebase/uitext"
 	_ "github.com/dracory/nodebase/uitextinput"
 	_ "github.com/dracory/nodebase/unknown"
+	_ "github.com/dracory/nodebase/uuid"
 	_ "github.com/dracory/nodebase/wait"
 	_ "github.com/dracory/nodebase/watch"
 	_ "github.com/dracory/nodebase/websocketclient"
