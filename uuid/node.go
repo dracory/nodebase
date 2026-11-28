@@ -5,6 +5,7 @@ package uuid
 import (
 	"context"
 	_ "embed"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	stdlibuuid "uuid"
@@ -17,7 +18,7 @@ import (
 var editorHTML string
 
 func factory(n nodestore.NodeInterface, e nodebase.NodeHost) (nodebase.NodeExecutor, error) {
-	c := &Config{Version: "v7", Target: "payload"}
+	c := &Config{Version: "v7", Target: "payload", Format: "canonical"}
 	if err := nodebase.DecodeConfig(n, c); err != nil {
 		return nil, err
 	}
@@ -54,6 +55,10 @@ var schema = map[string]interface{}{
 			"type": "string", "title": "Target Property", "default": "payload",
 			"description": "Where the canonical lowercase UUID string is written; use payload to replace the payload or msg.* for metadata output",
 		},
+		"format": map[string]interface{}{
+			"type": "string", "title": "Format", "enum": []string{"canonical", "hex"}, "default": "canonical",
+			"description": "canonical is the hyphenated RFC 9562 text form (36 characters); hex is the dashless 32-character form for systems with strict key formats",
+		},
 	},
 }
 
@@ -61,6 +66,7 @@ var schema = map[string]interface{}{
 type Config struct {
 	Version string `json:"version"`
 	Target  string `json:"target"`
+	Format  string `json:"format"`
 }
 
 // Node writes a freshly generated UUID into each input message.
@@ -84,6 +90,9 @@ func validateConfig(c *Config) error {
 	if strings.TrimSpace(c.Target) == "" {
 		return fmt.Errorf("uuid: target property is required")
 	}
+	if c.Format != "" && c.Format != "canonical" && c.Format != "hex" {
+		return fmt.Errorf("uuid: unsupported format %q", c.Format)
+	}
 	return nil
 }
 
@@ -100,7 +109,13 @@ func (n *Node) Execute(ctx context.Context, in nodestore.MessageInterface) (node
 	} else {
 		id = stdlibuuid.NewV7()
 	}
-	if err := nodebase.SetMessageProperty(in, n.cfg.Target, id.String()); err != nil {
+	// Empty format is canonical: configurations stored before the format
+	// field existed carry no value and must keep their original output.
+	out := id.String()
+	if n.cfg.Format == "hex" {
+		out = hex.EncodeToString(id[:])
+	}
+	if err := nodebase.SetMessageProperty(in, n.cfg.Target, out); err != nil {
 		return nil, err
 	}
 	return in, nil

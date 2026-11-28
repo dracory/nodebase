@@ -7,7 +7,7 @@ It is useful for correlation IDs, database keys, idempotency keys, file names, e
 ## Behavior
 
 - Exactly one new UUID is generated per executed input message.
-- UUIDs are emitted in canonical lowercase string form, for example `018f3d2c-ca7b-7f42-9e11-65c8a4f1d2ab`.
+- UUIDs are emitted in canonical lowercase string form, for example `018f3d2c-ca7b-7f42-9e11-65c8a4f1d2ab`, or in the dashless 32-character hex form when `format` is `hex`.
 - The input message object is preserved. Unrelated payload and metadata fields are left unchanged.
 - The node uses Go's standard-library `uuid` package. It does not require a third-party UUID dependency.
 
@@ -17,6 +17,7 @@ It is useful for correlation IDs, database keys, idempotency keys, file names, e
 | --- | --- | --- | --- |
 | `version` | `v7`, `v4` | `v7` | UUID version to generate. `v7` is time-ordered and preferred for new identifiers. `v4` is random and useful for compatibility with systems that expect random UUIDs. |
 | `target` | message property path | `payload` | Where the UUID string is written. Use `payload` to replace the payload, or a path such as `msg.identifiers.correlation` to write metadata. |
+| `format` | `canonical`, `hex` | `canonical` | Output format. `canonical` is the hyphenated RFC 9562 text form (36 characters); `hex` is the dashless 32-character form for systems with strict key formats. |
 
 ## Examples
 
@@ -44,4 +45,4 @@ msg.identifiers.correlation
 
 ## Validation
 
-The node rejects unsupported versions and blank target property names during construction or execution.
+The node rejects unsupported versions, blank target property names, and unsupported formats during construction or execution. Configurations stored before the `format` field existed carry no value and keep producing the canonical hyphenated form.

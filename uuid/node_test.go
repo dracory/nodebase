@@ -14,6 +14,10 @@ func testNode(version, target string) *Node {
 	return NewNode(nodestore.NewNode("u1", "uuid"), &Config{Version: version, Target: target})
 }
 
+func testNodeWithFormat(version, target, format string) *Node {
+	return NewNode(nodestore.NewNode("u1", "uuid"), &Config{Version: version, Target: target, Format: format})
+}
+
 func executeOne(t *testing.T, node *Node, in nodestore.MessageInterface) nodestore.MessageInterface {
 	t.Helper()
 	out, err := node.Execute(context.Background(), in)
@@ -83,8 +87,8 @@ func TestUUIDDefaultFactoryConfig(t *testing.T) {
 	if !ok {
 		t.Fatalf("factory returned %T, want *Node", executor)
 	}
-	if n.cfg.Version != "v7" || n.cfg.Target != "payload" {
-		t.Fatalf("default config = %+v, want v7/payload", n.cfg)
+	if n.cfg.Version != "v7" || n.cfg.Target != "payload" || n.cfg.Format != "canonical" {
+		t.Fatalf("default config = %+v, want v7/payload/canonical", n.cfg)
 	}
 }
 
@@ -111,6 +115,37 @@ func TestUUIDTargetsAndMessagePreservation(t *testing.T) {
 	parseTargetUUID(t, identifiers["correlation"])
 }
 
+func TestUUIDHexFormatOutput(t *testing.T) {
+	out := executeOne(t, testNodeWithFormat("v7", "payload", "hex"), nodestore.NewMessage().SetPayload("input"))
+	s, ok := out.GetPayload().(string)
+	if !ok {
+		t.Fatalf("UUID output is %T, want string", out.GetPayload())
+	}
+	if len(s) != 32 {
+		t.Fatalf("hex UUID output %q is %d characters, want 32", s, len(s))
+	}
+	if strings.Contains(s, "-") {
+		t.Fatalf("hex UUID output %q contains dashes", s)
+	}
+	if s != strings.ToLower(s) {
+		t.Fatalf("hex UUID output %q is not lowercase", s)
+	}
+	// The stdlib parser accepts the bare 32-character hex form; the bits
+	// underneath the formatting are still a version-correct RFC 9562 UUID.
+	parsed, err := stdlibuuid.Parse(s)
+	if err != nil {
+		t.Fatalf("hex UUID output does not parse: %v", err)
+	}
+	assertRFCVariantAndVersion(t, parsed, 7)
+}
+
+func TestUUIDEmptyFormatIsCanonical(t *testing.T) {
+	// Configurations stored before the format field existed carry no
+	// value; they must keep producing the canonical hyphenated form.
+	out := executeOne(t, testNodeWithFormat("v7", "payload", ""), nodestore.NewMessage())
+	parseTargetUUID(t, out.GetPayload())
+}
+
 func TestUUIDValidationErrors(t *testing.T) {
 	for _, cfg := range []*Config{
 		{Version: "v5", Target: "payload"},
@@ -124,6 +159,13 @@ func TestUUIDValidationErrors(t *testing.T) {
 	bad := nodestore.NewNode("u-bad", "uuid").SetData(map[string]any{"version": "v5"})
 	if _, err := factory(bad, nil); err == nil || !strings.Contains(err.Error(), "unsupported version") {
 		t.Fatalf("factory should reject unsupported version: %v", err)
+	}
+	if _, err := testNodeWithFormat("v7", "payload", "base64").Execute(context.Background(), nodestore.NewMessage()); err == nil {
+		t.Fatal("unsupported format should fail validation")
+	}
+	badFormat := nodestore.NewNode("u-badfmt", "uuid").SetData(map[string]any{"format": "base64"})
+	if _, err := factory(badFormat, nil); err == nil || !strings.Contains(err.Error(), "unsupported format") {
+		t.Fatalf("factory should reject unsupported format: %v", err)
 	}
 }
 
