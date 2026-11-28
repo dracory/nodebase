@@ -67,8 +67,13 @@ var schema = map[string]interface{}{
 			"title":   "Listener",
 			"enum":    []string{"own", "main"},
 			"default": "own",
-			"description": "own: bind a private listener on Port. main: serve Path on the admin " +
-				"server's port (Node-RED style) — behind admin auth when configured; Port is ignored",
+			"options": []map[string]interface{}{
+				{"value": "own", "title": "Own dedicated listener",
+					"description": "Start a private HTTP listener on the configured Port"},
+				{"value": "main", "title": "Main application listener",
+					"description": "Serve Path on the host application's shared HTTP server beneath the nodeadmin mount; the editor shows the full mounted URL. Requires a shared HTTP router; Port is ignored"},
+			},
+			"description": "Choose whether this node opens its own port or mounts Path on the host application's shared HTTP server",
 		},
 		"path": map[string]interface{}{
 			"type":        "string",

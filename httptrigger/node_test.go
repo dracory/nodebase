@@ -143,6 +143,21 @@ func TestTriggerResponseTimeout(t *testing.T) {
 	}
 }
 
+func TestListenerSchemaOptionsExplainChoices(t *testing.T) {
+	props := schema["properties"].(map[string]interface{})
+	listener := props["listener"].(map[string]interface{})
+	options, ok := listener["options"].([]map[string]interface{})
+	if !ok || len(options) != 2 {
+		t.Fatalf("listener schema should expose two rich options, got %#v", listener["options"])
+	}
+	if options[0]["value"] != "own" || options[0]["description"] == "" {
+		t.Fatalf("own option should have an explanation: %#v", options[0])
+	}
+	if options[1]["value"] != "main" || options[1]["description"] == "" {
+		t.Fatalf("main option should have an explanation: %#v", options[1])
+	}
+}
+
 func TestTriggerValidate(t *testing.T) {
 	host := &fakeHost{}
 	n := newNode(&HTTPTriggerConfig{Method: http.MethodGet, Path: "/x"}, host)
