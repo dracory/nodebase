@@ -92,7 +92,7 @@ func TestTailFollowsAppends(t *testing.T) {
 	}
 	// append new lines — the node starts at EOF so "old" is not emitted
 	f, _ := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0644)
-	_ = f.WriteString("new-line\npartial")
+	_, _ = f.WriteString("new-line\npartial")
 	_ = f.Close()
 	waitFor(t, func() bool { return len(host.emittedMsgs()) >= 1 }, "line emission")
 	emitted := host.emittedMsgs()
