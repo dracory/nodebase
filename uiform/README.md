@@ -1,0 +1,26 @@
+# UI Form node
+
+Type: `uiForm`  
+Category: `Dashboard`
+
+Dashboard form: named fields + submit emits an object msg.payload.
+
+## Behavior
+
+This node is registered as `uiForm` and runs as part of a workflow. Its exact runtime behavior is implemented in `node.go`; this document summarizes the editor-facing purpose and configuration contract.
+
+## Configuration
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `fields` | `array` |  | Fields — List of {name, label?, type: text\|number\|checkbox\|select, options?, value?} |
+| `group` | `string` |  | Group — Optional section inside the page |
+| `label` | `string` |  | Label — Widget caption; falls back to the node name then id |
+| `order` | `number` |  | Order — Optional sort hint within the group |
+| `page` | `string` | `default` | Page — Dashboard page the widget renders on |
+
+## Implementation
+
+- `node.go` contains the executor, validation, schema, and registration.
+- `editor.html` contains the editor integration.
+- `node_test.go`, when present, contains behavioral tests.

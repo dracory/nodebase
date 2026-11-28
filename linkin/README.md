@@ -1,0 +1,22 @@
+# Link In node
+
+Type: `linkIn`  
+Category: `Flow Control`
+
+Receives messages pushed by Link Out and Link Call nodes.
+
+## Behavior
+
+This node is registered as `linkIn` and runs as part of a workflow. Its exact runtime behavior is implemented in `node.go`; this document summarizes the editor-facing purpose and configuration contract.
+
+## Configuration
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `links` | `array` |  | Links — linkOut nodes allowed to push messages into this link |
+
+## Implementation
+
+- `node.go` contains the executor, validation, schema, and registration.
+- `editor.html` contains the editor integration.
+- `node_test.go`, when present, contains behavioral tests.
