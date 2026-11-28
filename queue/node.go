@@ -46,10 +46,20 @@ var schema = map[string]interface{}{
 			"default":     0,
 		},
 		"policy": map[string]interface{}{
-			"type":        "string",
-			"title":       "Overflow Policy",
-			"enum":        []string{"block", "drop-newest", "drop-oldest", "route-to-catch"},
-			"default":     "block",
+			"type":    "string",
+			"title":   "Overflow Policy",
+			"enum":    []string{"block", "drop-newest", "drop-oldest", "route-to-catch"},
+			"default": "block",
+			"options": []map[string]interface{}{
+				{"value": "block", "title": "Block (backpressure)",
+					"description": "Hold the incoming message until the queue drops below Capacity. Nothing is lost, but upstream work can wait"},
+				{"value": "drop-newest", "title": "Drop newest",
+					"description": "Discard the incoming message when the queue is full; existing queued items are preserved"},
+				{"value": "drop-oldest", "title": "Drop oldest",
+					"description": "Evict the oldest queued item to make room for the incoming message"},
+				{"value": "route-to-catch", "title": "Route to Catch",
+					"description": "Discard the incoming message and report the overflow to an in-scope Catch node"},
+			},
 			"description": "What happens when the queue reaches capacity",
 		},
 		"hold": map[string]interface{}{
@@ -63,8 +73,13 @@ var schema = map[string]interface{}{
 			"title":   "Storage Backend",
 			"enum":    []string{"durable", "dir"},
 			"default": "durable",
-			"description": "durable: the configured durable inbox store (shared, multi-runner). " +
-				"dir: one file per queued item in a directory, inspectable with OS tools",
+			"options": []map[string]interface{}{
+				{"value": "durable", "title": "Durable inbox store",
+					"description": "Store items in the configured durable inbox store. Recommended; shared and multi-runner safe"},
+				{"value": "dir", "title": "Directory files",
+					"description": "Write one file per queued item to a local or remote directory for OS-level inspection. Multi-runner safety depends on the filesystem deployment"},
+			},
+			"description": "Choose where queued items are persisted",
 		},
 		"dir": map[string]interface{}{
 			"type":  "string",
