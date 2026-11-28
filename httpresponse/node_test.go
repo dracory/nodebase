@@ -120,3 +120,11 @@ func TestResponseHeadersMerge(t *testing.T) {
 		t.Fatalf("header merge wrong: %v", h)
 	}
 }
+
+func TestSchemaHeadersUseKeyValueEditor(t *testing.T) {
+	props := schema["properties"].(map[string]interface{})
+	headers := props["headers"].(map[string]interface{})
+	if headers["format"] != "keyvalue" {
+		t.Fatalf("headers should use the key/value editor, got %#v", headers["format"])
+	}
+}

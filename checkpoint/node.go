@@ -41,13 +41,11 @@ var schema = map[string]interface{}{
 	"type": "object",
 	"properties": map[string]interface{}{
 		"routes": map[string]interface{}{
-			"type":  "array",
-			"title": "Routes",
-			"description": "Ordered list of route labels; routes[i] labels output_{i+1}. " +
-				"Each route becomes a button in the inspection panel — releasing an item " +
-				"via a route delivers it only on that edge",
-			"items":   map[string]any{"type": "string"},
-			"default": []string{"approve", "decline"},
+			"type":    "string",
+			"title":   "Routes",
+			"default": "approve, decline",
+			"description": "Comma-separated route labels in output order; the first label uses output 1, the second output 2, and so on. " +
+				"Each route becomes a release button in the inspection panel. JSON arrays from existing flows remain accepted at runtime",
 		},
 		"capacity": map[string]interface{}{
 			"type":        "number",

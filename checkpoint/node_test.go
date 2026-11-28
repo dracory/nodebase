@@ -19,3 +19,17 @@ func TestSchemaOptionsExplainCheckpointChoices(t *testing.T) {
 		t.Fatalf("directory backend should be explained: %#v", backendOptions[1])
 	}
 }
+
+func TestSchemaRoutesUseCommaSeparatedText(t *testing.T) {
+	props := schema["properties"].(map[string]interface{})
+	routes := props["routes"].(map[string]interface{})
+	if routes["type"] != "string" {
+		t.Fatalf("routes should edit as comma-separated text, got %#v", routes["type"])
+	}
+	if routes["default"] != "approve, decline" {
+		t.Fatalf("default routes wrong: %#v", routes["default"])
+	}
+	if routes["description"] == "" {
+		t.Fatal("routes should explain output ordering")
+	}
+}

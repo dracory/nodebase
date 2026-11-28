@@ -45,7 +45,40 @@ var schema = map[string]interface{}{
 		"fields": map[string]interface{}{
 			"type":        "array",
 			"title":       "Fields",
-			"description": "List of {name, label?, type: text|number|checkbox|select, options?, value?}",
+			"description": "Form controls rendered on the dashboard; submit emits an object payload keyed by each field Name",
+			"items": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"name": map[string]string{
+						"type":  "string",
+						"title": "Name",
+					},
+					"label": map[string]string{
+						"type":  "string",
+						"title": "Label",
+					},
+					"type": map[string]interface{}{
+						"type":    "string",
+						"title":   "Type",
+						"enum":    []string{"text", "number", "checkbox", "select"},
+						"default": "text",
+					},
+					"options": map[string]interface{}{
+						"type":        "string",
+						"title":       "Options",
+						"description": "Comma-separated choices for select fields",
+						"showWhen":    map[string]interface{}{"key": "type", "in": []string{"select"}},
+					},
+					"value": map[string]interface{}{
+						"type":            "string",
+						"title":           "Initial Value",
+						"format":          "typedinput",
+						"typeField":       "valueType",
+						"typedInputTypes": []string{"str", "num", "bool", "json"},
+						"defaultType":     "str",
+					},
+				},
+			},
 		},
 	}),
 }

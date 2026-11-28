@@ -65,8 +65,10 @@ var schema = map[string]interface{}{
 			"default": "GET",
 		},
 		"headers": map[string]interface{}{
-			"type":  "object",
-			"title": "Headers",
+			"type":        "object",
+			"title":       "Headers",
+			"format":      "keyvalue",
+			"description": "Extra request headers sent with every request",
 			"additionalProperties": map[string]string{
 				"type": "string",
 			},

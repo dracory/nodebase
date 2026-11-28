@@ -50,6 +50,7 @@ var schema = map[string]interface{}{
 		"headers": map[string]interface{}{
 			"type":        "object",
 			"title":       "Headers",
+			"format":      "keyvalue",
 			"description": "Extra response headers; a headers object in the message merges on top",
 			"additionalProperties": map[string]string{
 				"type": "string",

@@ -20,6 +20,10 @@ package nodebase
 //	                 type ∈ text|number|checkbox|select; options for select.
 
 import (
+	"encoding/json"
+	"strconv"
+	"strings"
+
 	nodestore "github.com/dracory/nodestore"
 )
 
@@ -153,7 +157,18 @@ func UIFormFields(data map[string]interface{}) []UIFormField {
 		default:
 			f.Type = "text"
 		}
-		if opts, ok := m["options"].([]interface{}); ok {
+		switch opts := m["options"].(type) {
+		case string:
+			// The schema-driven editor writes select options as a
+			// comma-separated list; arrays remain the canonical JSON form.
+			for _, part := range strings.Split(opts, ",") {
+				if s := strings.TrimSpace(part); s != "" {
+					f.Options = append(f.Options, s)
+				}
+			}
+		case []string:
+			f.Options = append(f.Options, opts...)
+		case []interface{}:
 			for _, o := range opts {
 				if s, ok := o.(string); ok {
 					f.Options = append(f.Options, s)
@@ -161,9 +176,36 @@ func UIFormFields(data map[string]interface{}) []UIFormField {
 			}
 		}
 		if v, present := m["value"]; present {
-			f.Value = v
+			f.Value = uiFormTypedValue(v, m["valueType"])
 		}
 		fields = append(fields, f)
 	}
 	return fields
+}
+
+// uiFormTypedValue interprets the schema editor's typed-input value.
+// Rows without an explicit valueType keep their JSON value verbatim so
+// legacy hand-authored configurations are unchanged.
+func uiFormTypedValue(value interface{}, valueType interface{}) interface{} {
+	typed, _ := valueType.(string)
+	if typed == "" || typed == "str" {
+		return value
+	}
+	text, _ := value.(string)
+	switch typed {
+	case "num":
+		if n, err := strconv.ParseFloat(text, 64); err == nil {
+			return n
+		}
+	case "bool":
+		if b, err := strconv.ParseBool(text); err == nil {
+			return b
+		}
+	case "json":
+		var decoded interface{}
+		if err := json.Unmarshal([]byte(text), &decoded); err == nil {
+			return decoded
+		}
+	}
+	return value
 }

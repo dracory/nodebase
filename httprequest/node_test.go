@@ -190,3 +190,11 @@ func TestRequestValidateDefaults(t *testing.T) {
 		t.Fatal("validate should default method to GET")
 	}
 }
+
+func TestSchemaHeadersUseKeyValueEditor(t *testing.T) {
+	props := schema["properties"].(map[string]interface{})
+	headers := props["headers"].(map[string]interface{})
+	if headers["format"] != "keyvalue" {
+		t.Fatalf("headers should use the key/value editor, got %#v", headers["format"])
+	}
+}
