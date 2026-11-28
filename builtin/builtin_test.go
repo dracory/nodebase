@@ -37,7 +37,7 @@ func TestPortedTypesRegistered(t *testing.T) {
 	for _, typeID := range []string{
 		"uiText", "uiGauge", "uiChart", "uiNotification",
 		"uiButton", "uiTextInput", "uiForm",
-		"pdf", "docToText", "compress", "hash", "notify", "wait", "uuid",
+		"pdf", "docToText", "compress", "hash", "notify", "wait",
 	} {
 		reg, ok := nodebase.RegisteredNode(typeID)
 		if !ok {
@@ -56,5 +56,18 @@ func TestPortedTypesRegistered(t *testing.T) {
 		if d.EditorHTML == "" {
 			t.Fatalf("%s registered without editor HTML", typeID)
 		}
+	}
+}
+
+// TestUUIDTypeRegistered proves the uuid folder is included in the builtin
+// blank-import aggregation, not merely self-registered when its own package
+// tests run.
+func TestUUIDTypeRegistered(t *testing.T) {
+	reg, ok := nodebase.RegisteredNode("uuid")
+	if !ok {
+		t.Fatal("uuid not registered through builtin aggregation")
+	}
+	if reg.Factory == nil || reg.Descriptor.Schema == nil || reg.Descriptor.EditorHTML == "" {
+		t.Fatalf("uuid registration incomplete: %+v", reg)
 	}
 }
