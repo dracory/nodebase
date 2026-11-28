@@ -190,7 +190,7 @@ func (n *TailNode) drain(path string, st *tailState) {
 	if err != nil {
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if _, err := f.Seek(st.offset, io.SeekStart); err != nil {
 		return
 	}

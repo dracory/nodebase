@@ -183,7 +183,7 @@ func (n *UDPOutNode) Execute(ctx context.Context, input nodestore.MessageInterfa
 	if err != nil {
 		return nil, fmt.Errorf("udpOut cannot reach %s:%d: %w", host, port, err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if _, err := conn.Write(data); err != nil {
 		return nil, fmt.Errorf("udpOut write failed: %w", err)
 	}

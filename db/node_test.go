@@ -72,7 +72,7 @@ func activated(t *testing.T, dsn, id string, cfg *DBConfig) *DBNode {
 	if err := n.Activate(context.Background()); err != nil {
 		t.Fatalf("activate failed: %v", err)
 	}
-	t.Cleanup(func() { n.Stop() })
+	t.Cleanup(func() { _ = n.Stop() })
 	return n
 }
 
@@ -82,7 +82,7 @@ func TestDBQueryRoundTrip(t *testing.T) {
 	if _, err := exec.Execute(context.Background(), nodestore.NewMessage()); err != nil {
 		t.Fatalf("create failed: %v", err)
 	}
-	exec.Stop()
+	_ = exec.Stop()
 
 	ins := activated(t, dsn, "n1", &DBConfig{Operation: "exec", SQL: "INSERT INTO t (name) VALUES (?)", Params: []interface{}{"alice"}})
 	out, err := ins.Execute(context.Background(), nodestore.NewMessage())

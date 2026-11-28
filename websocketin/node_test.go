@@ -87,7 +87,7 @@ func freePort(t *testing.T) int {
 		t.Fatalf("probe failed: %v", err)
 	}
 	port := ln.Addr().(*net.TCPAddr).Port
-	ln.Close()
+	_ = ln.Close()
 	return port
 }
 
@@ -107,7 +107,7 @@ func TestWebSocketInRoundTrip(t *testing.T) {
 	host := &fakeHost{}
 	n := NewWebSocketInNode(nodestore.NewNode("w1", "websocketIn").SetWorkflowID("wf"),
 		&WebSocketInConfig{Path: "/ws", Port: port}, host)
-	defer n.Stop()
+	defer func() { _ = n.Stop() }()
 
 	out, err := n.Execute(context.Background(), nodestore.NewMessage())
 	if err != nil {
@@ -121,7 +121,7 @@ func TestWebSocketInRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial failed: %v", err)
 	}
-	defer conn.Close(websocket.StatusNormalClosure, "bye")
+	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "bye") }()
 
 	if err := conn.Write(context.Background(), websocket.MessageText, []byte("hello")); err != nil {
 		t.Fatalf("write failed: %v", err)

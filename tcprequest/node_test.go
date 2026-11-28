@@ -69,7 +69,7 @@ func echoServer(t *testing.T, handle func(net.Conn)) int {
 	if err != nil {
 		t.Fatalf("listen failed: %v", err)
 	}
-	t.Cleanup(func() { ln.Close() })
+	t.Cleanup(func() { _ = ln.Close() })
 	go func() {
 		for {
 			conn, err := ln.Accept()
@@ -84,10 +84,10 @@ func echoServer(t *testing.T, handle func(net.Conn)) int {
 
 func TestTCPRequestTimeoutMode(t *testing.T) {
 	port := echoServer(t, func(conn net.Conn) {
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		buf := make([]byte, 64)
-		conn.Read(buf) // drain the request first so close isn't a RST
-		conn.Write([]byte("reply-data"))
+		_, _ = conn.Read(buf) // drain the request first so close isn't a RST
+		_, _ = conn.Write([]byte("reply-data"))
 	})
 	n := newNode(&TCPRequestConfig{Host: "127.0.0.1", Port: port, Timeout: 2}, &fakeHost{})
 	out, err := n.Execute(context.Background(), nodestore.NewMessage().SetPayload("q"))
@@ -104,8 +104,8 @@ func TestTCPRequestTimeoutMode(t *testing.T) {
 
 func TestTCPRequestDelimiterMode(t *testing.T) {
 	port := echoServer(t, func(conn net.Conn) {
-		defer conn.Close()
-		conn.Write([]byte("part1<END>extra ignored"))
+		defer func() { _ = conn.Close() }()
+		_, _ = conn.Write([]byte("part1<END>extra ignored"))
 	})
 	n := newNode(&TCPRequestConfig{
 		Host: "127.0.0.1", Port: port, Mode: "delimiter", Delimiter: "<END>", Timeout: 2,
@@ -121,8 +121,8 @@ func TestTCPRequestDelimiterMode(t *testing.T) {
 
 func TestTCPRequestLengthMode(t *testing.T) {
 	port := echoServer(t, func(conn net.Conn) {
-		defer conn.Close()
-		conn.Write([]byte("0123456789EXTRA"))
+		defer func() { _ = conn.Close() }()
+		_, _ = conn.Write([]byte("0123456789EXTRA"))
 	})
 	n := newNode(&TCPRequestConfig{
 		Host: "127.0.0.1", Port: port, Mode: "length", Length: 5, Timeout: 2,
@@ -138,10 +138,10 @@ func TestTCPRequestLengthMode(t *testing.T) {
 
 func TestTCPRequestBufferRet(t *testing.T) {
 	port := echoServer(t, func(conn net.Conn) {
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		buf := make([]byte, 64)
-		conn.Read(buf) // drain the request first so close isn't a RST
-		conn.Write([]byte{0xDE, 0xAD})
+		_, _ = conn.Read(buf) // drain the request first so close isn't a RST
+		_, _ = conn.Write([]byte{0xDE, 0xAD})
 	})
 	n := newNode(&TCPRequestConfig{Host: "127.0.0.1", Port: port, Ret: "buffer", Timeout: 2}, &fakeHost{})
 	out, err := n.Execute(context.Background(), nodestore.NewMessage().SetPayload("q"))
@@ -156,7 +156,7 @@ func TestTCPRequestBufferRet(t *testing.T) {
 func TestTCPRequestKeepAlive(t *testing.T) {
 	conns := 0
 	port := echoServer(t, func(conn net.Conn) {
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		conns++
 		buf := make([]byte, 64)
 		for {
@@ -164,7 +164,7 @@ func TestTCPRequestKeepAlive(t *testing.T) {
 			if err != nil {
 				return
 			}
-			conn.Write([]byte(fmt.Sprintf("echo:%d\n", nr)))
+			_, _ = conn.Write([]byte(fmt.Sprintf("echo:%d\n", nr)))
 		}
 	})
 	host := &fakeHost{}
@@ -188,8 +188,8 @@ func TestTCPRequestKeepAlive(t *testing.T) {
 func TestTCPRequestOutChar(t *testing.T) {
 	// Node-RED out:"char" + splitc — reply ends at the delimiter byte.
 	port := echoServer(t, func(conn net.Conn) {
-		defer conn.Close()
-		conn.Write([]byte("first\nsecond"))
+		defer func() { _ = conn.Close() }()
+		_, _ = conn.Write([]byte("first\nsecond"))
 	})
 	n := newNode(&TCPRequestConfig{
 		Server: "127.0.0.1", Port: port, Out: "char", Splitc: `\n`, Ret: "string", Timeout: 2,
@@ -206,8 +206,8 @@ func TestTCPRequestOutChar(t *testing.T) {
 func TestTCPRequestOutCount(t *testing.T) {
 	// Node-RED out:"count" + splitc — reply is exactly N bytes.
 	port := echoServer(t, func(conn net.Conn) {
-		defer conn.Close()
-		conn.Write([]byte("0123456789EXTRA"))
+		defer func() { _ = conn.Close() }()
+		_, _ = conn.Write([]byte("0123456789EXTRA"))
 	})
 	n := newNode(&TCPRequestConfig{
 		Server: "127.0.0.1", Port: port, Out: "count", Splitc: "5", Ret: "string", Timeout: 2,
@@ -225,10 +225,10 @@ func TestTCPRequestOutImmed(t *testing.T) {
 	// Node-RED out:"immed" — send and return without waiting.
 	replied := make(chan struct{}, 1)
 	port := echoServer(t, func(conn net.Conn) {
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		buf := make([]byte, 64)
-		conn.Read(buf)
-		conn.Write([]byte("too late"))
+		_, _ = conn.Read(buf)
+		_, _ = conn.Write([]byte("too late"))
 		replied <- struct{}{}
 	})
 	n := newNode(&TCPRequestConfig{
@@ -247,10 +247,10 @@ func TestTCPRequestOutImmed(t *testing.T) {
 func TestTCPRequestMsgPortOverride(t *testing.T) {
 	// Node-RED msg.port overrides the configured port.
 	port := echoServer(t, func(conn net.Conn) {
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		buf := make([]byte, 64)
-		conn.Read(buf) // drain the request first so close isn't a RST
-		conn.Write([]byte("via-msg"))
+		_, _ = conn.Read(buf) // drain the request first so close isn't a RST
+		_, _ = conn.Write([]byte("via-msg"))
 	})
 	in := nodestore.NewMessage().SetPayload("q").SetMetadata(map[string]interface{}{
 		"host": "127.0.0.1", "port": fmt.Sprintf("%d", port),
@@ -291,7 +291,7 @@ func TestTCPRequestDialFailure(t *testing.T) {
 		t.Fatalf("probe listen failed: %v", err)
 	}
 	port := ln.Addr().(*net.TCPAddr).Port
-	ln.Close()
+	_ = ln.Close()
 	n := newNode(&TCPRequestConfig{Host: "127.0.0.1", Port: port, Timeout: 1}, &fakeHost{})
 	if _, err := n.Execute(context.Background(), nodestore.NewMessage().SetPayload("x")); err == nil {
 		t.Fatal("unreachable host should fail")

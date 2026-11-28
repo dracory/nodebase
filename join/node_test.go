@@ -184,7 +184,7 @@ func TestJoinObjectUsesPartsKey(t *testing.T) {
 		})
 		return m
 	}
-	n.Execute(context.Background(), mk("k1", "v1"))
+	_, _ = n.Execute(context.Background(), mk("k1", "v1"))
 	out, _ := n.Execute(context.Background(), mk("k2", "v2"))
 	if out == nil {
 		t.Fatal("final object part should emit")
@@ -325,7 +325,7 @@ func TestJoinPropertyPath(t *testing.T) {
 		})
 		return m
 	}
-	n.Execute(ctx, mk(0, "a"))
+	_, _ = n.Execute(ctx, mk(0, "a"))
 	out, _ := n.Execute(ctx, mk(1, "b"))
 	if out == nil {
 		t.Fatal("final part should emit")

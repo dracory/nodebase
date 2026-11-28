@@ -382,7 +382,7 @@ func (n *TCPRequestNode) Execute(ctx context.Context, input nodestore.MessageInt
 		}
 	}
 	if state == nil {
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 	} else {
 		state.conn = conn
 	}

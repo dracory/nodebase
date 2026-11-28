@@ -237,10 +237,10 @@ func extractOfficeText(format string, zr *zip.Reader) (string, error) {
 			return "", fmt.Errorf("docToText: read %s failed: %w", name, err)
 		}
 		if err := collectXMLText(rc, &sb, textElems, breakElems); err != nil {
-			rc.Close()
+			_ = rc.Close()
 			return "", fmt.Errorf("docToText: parse %s failed: %w", name, err)
 		}
-		rc.Close()
+		_ = rc.Close()
 	}
 	return strings.TrimSpace(sb.String()), nil
 }

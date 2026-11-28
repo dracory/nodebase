@@ -33,7 +33,7 @@ func TestFileWriteOverwrite(t *testing.T) {
 		t.Fatalf("file content wrong: %q", b)
 	}
 	// overwrite truncates
-	n.Execute(context.Background(), nodestore.NewMessage().SetPayload("xy"))
+	_, _ = n.Execute(context.Background(), nodestore.NewMessage().SetPayload("xy"))
 	b, _ = os.ReadFile(path)
 	if string(b) != "xy" {
 		t.Fatalf("overwrite should truncate: %q", b)
@@ -43,8 +43,8 @@ func TestFileWriteOverwrite(t *testing.T) {
 func TestFileWriteAppend(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "out.txt")
 	n := newNode(&FileConfig{Filename: path, OverwriteFile: "false", AppendNewline: true})
-	n.Execute(context.Background(), nodestore.NewMessage().SetPayload("a"))
-	n.Execute(context.Background(), nodestore.NewMessage().SetPayload("b"))
+	_, _ = n.Execute(context.Background(), nodestore.NewMessage().SetPayload("a"))
+	_, _ = n.Execute(context.Background(), nodestore.NewMessage().SetPayload("b"))
 	b, _ := os.ReadFile(path)
 	if string(b) != "a\nb\n" {
 		t.Fatalf("append wrong: %q", b)
@@ -53,7 +53,7 @@ func TestFileWriteAppend(t *testing.T) {
 
 func TestFileWriteDelete(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "out.txt")
-	os.WriteFile(path, []byte("old"), 0644)
+	_ = os.WriteFile(path, []byte("old"), 0644)
 	n := newNode(&FileConfig{Filename: path, OverwriteFile: "delete"})
 	if _, err := n.Execute(context.Background(), nodestore.NewMessage().SetPayload("new")); err != nil {
 		t.Fatalf("execute failed: %v", err)
@@ -87,7 +87,7 @@ func TestFileEncodings(t *testing.T) {
 	}
 	// hex
 	n2 := newNode(&FileConfig{Filename: filepath.Join(dir, "hex.bin"), Encoding: "hex"})
-	n2.Execute(context.Background(), nodestore.NewMessage().SetPayload("6869"))
+	_, _ = n2.Execute(context.Background(), nodestore.NewMessage().SetPayload("6869"))
 	if b, _ := os.ReadFile(filepath.Join(dir, "hex.bin")); string(b) != "hi" {
 		t.Fatalf("hex decode wrong: %q", b)
 	}
@@ -98,7 +98,7 @@ func TestFileEncodings(t *testing.T) {
 	}
 	// non-string payload is JSON-marshalled
 	n4 := newNode(&FileConfig{Filename: filepath.Join(dir, "j.txt")})
-	n4.Execute(context.Background(), nodestore.NewMessage().SetPayload(map[string]interface{}{"a": 1}))
+	_, _ = n4.Execute(context.Background(), nodestore.NewMessage().SetPayload(map[string]interface{}{"a": 1}))
 	if b, _ := os.ReadFile(filepath.Join(dir, "j.txt")); string(b) != `{"a":1}` {
 		t.Fatalf("json marshal wrong: %q", b)
 	}

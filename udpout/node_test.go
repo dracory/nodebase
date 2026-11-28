@@ -25,14 +25,14 @@ func listen(t *testing.T) (*net.UDPConn, int) {
 	if err != nil {
 		t.Fatalf("udp listen failed: %v", err)
 	}
-	t.Cleanup(func() { conn.Close() })
+	t.Cleanup(func() { _ = conn.Close() })
 	return conn, conn.LocalAddr().(*net.UDPAddr).Port
 }
 
 func read(t *testing.T, conn *net.UDPConn) []byte {
 	t.Helper()
 	buf := make([]byte, 1024)
-	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 	nr, _, err := conn.ReadFromUDP(buf)
 	if err != nil {
 		t.Fatalf("no datagram received: %v", err)

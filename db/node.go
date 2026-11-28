@@ -268,7 +268,7 @@ func (n *DBNode) Execute(ctx context.Context, input nodestore.MessageInterface) 
 	if err != nil {
 		return nil, fmt.Errorf("db query failed: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	result, err := scanRows(rows)
 	if err != nil {

@@ -28,7 +28,7 @@ func zipBytes(t *testing.T, files map[string]string) []byte {
 		if err != nil {
 			t.Fatalf("zip create failed: %v", err)
 		}
-		f.Write([]byte(content))
+		_, _ = f.Write([]byte(content))
 	}
 	if err := w.Close(); err != nil {
 		t.Fatalf("zip close failed: %v", err)

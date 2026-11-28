@@ -66,7 +66,7 @@ func TestUIChartScalarAndArray(t *testing.T) {
 		t.Fatalf("scalar push wrong: %v", sk.states[0])
 	}
 
-	n.Execute(context.Background(), nodestore.NewMessage().SetPayload([]interface{}{1, 2}))
+	_, _ = n.Execute(context.Background(), nodestore.NewMessage().SetPayload([]interface{}{1, 2}))
 	vals, _ := sk.states[1]["values"].([]float64)
 	if len(vals) != 2 {
 		t.Fatalf("array push wrong: %v", sk.states[1])
@@ -74,7 +74,7 @@ func TestUIChartScalarAndArray(t *testing.T) {
 
 	// non-numeric pushes nothing
 	before := len(sk.states)
-	n.Execute(context.Background(), nodestore.NewMessage().SetPayload("not a number"))
+	_, _ = n.Execute(context.Background(), nodestore.NewMessage().SetPayload("not a number"))
 	if len(sk.states) != before {
 		t.Fatal("non-numeric payload pushed state")
 	}
@@ -85,7 +85,7 @@ func TestUIChartOverride(t *testing.T) {
 	sk := &sink{}
 	defer nodebase.BindUIWidgetSink(host, sk)()
 	n := NewUIChartNode(nodestore.NewNode("c1", "uiChart").SetWorkflowID("wf"), host, &UIChartConfig{})
-	n.Execute(context.Background(), nodestore.NewMessage().SetPayload(map[string]interface{}{
+	_, _ = n.Execute(context.Background(), nodestore.NewMessage().SetPayload(map[string]interface{}{
 		"payload": 5, "ui": map[string]interface{}{"value": 9},
 	}))
 	if sk.states[0]["value"] != 9 {

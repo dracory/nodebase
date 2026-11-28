@@ -131,7 +131,7 @@ func (s *sftpFs) ReadFile(name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return io.ReadAll(f)
 }
 func (s *sftpFs) WriteFile(name string, data []byte) error {
@@ -139,7 +139,7 @@ func (s *sftpFs) WriteFile(name string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	_, err = f.Write(data)
 	return err
 }
@@ -148,7 +148,7 @@ func (s *sftpFs) AppendFile(name string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	_, err = f.Write(data)
 	return err
 }

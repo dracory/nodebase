@@ -67,7 +67,7 @@ func TestUIText(t *testing.T) {
 	}
 
 	// label override survives
-	n.Execute(context.Background(), nodestore.NewMessage().SetPayload(map[string]interface{}{
+	_, _ = n.Execute(context.Background(), nodestore.NewMessage().SetPayload(map[string]interface{}{
 		"payload": "x", "ui": map[string]interface{}{"label": "Temp"},
 	}))
 	if sk.states[1]["label"] != "Temp" {

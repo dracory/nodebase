@@ -68,8 +68,8 @@ func multipartBody(t *testing.T, field, filename, content string) (*bytes.Buffer
 	if err != nil {
 		t.Fatalf("multipart create failed: %v", err)
 	}
-	part.Write([]byte(content))
-	w.Close()
+	_, _ = part.Write([]byte(content))
+	_ = w.Close()
 	return &buf, w.FormDataContentType()
 }
 

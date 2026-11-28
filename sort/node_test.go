@@ -91,7 +91,7 @@ func TestSortMsgAscDesc(t *testing.T) {
 
 	n2, _ := newNode(&SortConfig{Order: "desc"})
 	msg2 := nodestore.NewMessage().SetPayload([]interface{}{1.0, 3.0, 2.0})
-	n2.Execute(context.Background(), msg2)
+	_, _ = n2.Execute(context.Background(), msg2)
 	arr2 := msg2.GetPayload().([]interface{})
 	if arr2[0] != 3.0 {
 		t.Fatalf("desc sort wrong: %v", arr2)
@@ -110,7 +110,7 @@ func TestSortMsgNonArray(t *testing.T) {
 func TestSortStringsAndMixed(t *testing.T) {
 	n, _ := newNode(&SortConfig{})
 	msg := nodestore.NewMessage().SetPayload([]interface{}{"b", "a", "c"})
-	n.Execute(context.Background(), msg)
+	_, _ = n.Execute(context.Background(), msg)
 	arr := msg.GetPayload().([]interface{})
 	if arr[0] != "a" || arr[2] != "c" {
 		t.Fatalf("string sort wrong: %v", arr)
@@ -118,7 +118,7 @@ func TestSortStringsAndMixed(t *testing.T) {
 	// asNum coerces numeric strings
 	n2, _ := newNode(&SortConfig{AsNum: true})
 	msg2 := nodestore.NewMessage().SetPayload([]interface{}{"10", "2", "1"})
-	n2.Execute(context.Background(), msg2)
+	_, _ = n2.Execute(context.Background(), msg2)
 	arr2 := msg2.GetPayload().([]interface{})
 	if arr2[0] != "1" || arr2[2] != "10" {
 		t.Fatalf("asNum sort wrong: %v", arr2)
@@ -142,8 +142,8 @@ func TestSortSeq(t *testing.T) {
 	if out != nil {
 		t.Fatal("incomplete seq should drop")
 	}
-	n.Execute(ctx, partMsg("g", 0, 3, "a"))
-	n.Execute(ctx, partMsg("g", 1, 3, "b"))
+	_, _ = n.Execute(ctx, partMsg("g", 0, 3, "a"))
+	_, _ = n.Execute(ctx, partMsg("g", 1, 3, "b"))
 
 	deadline := time.Now().Add(2 * time.Second)
 	for len(host.downstreamMsgs()) < 3 && time.Now().Before(deadline) {
@@ -182,8 +182,8 @@ func TestSortSeqByKey(t *testing.T) {
 		})
 		return m
 	}
-	n.Execute(ctx, mk(0, 2))
-	n.Execute(ctx, mk(1, 1))
+	_, _ = n.Execute(ctx, mk(0, 2))
+	_, _ = n.Execute(ctx, mk(1, 1))
 	deadline := time.Now().Add(2 * time.Second)
 	for len(host.downstreamMsgs()) < 2 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)

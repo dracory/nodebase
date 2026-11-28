@@ -41,8 +41,8 @@ func TestFsOutWrite(t *testing.T) {
 func TestFsOutAppend(t *testing.T) {
 	dir := t.TempDir()
 	n := newNode(&FsOutConfig{Location: dir, Filename: "a.txt", OverwriteFile: "false", AppendNewline: true})
-	n.Execute(context.Background(), nodestore.NewMessage().SetPayload("x"))
-	n.Execute(context.Background(), nodestore.NewMessage().SetPayload("y"))
+	_, _ = n.Execute(context.Background(), nodestore.NewMessage().SetPayload("x"))
+	_, _ = n.Execute(context.Background(), nodestore.NewMessage().SetPayload("y"))
 	b, _ := os.ReadFile(filepath.Join(dir, "a.txt"))
 	if string(b) != "x\ny\n" {
 		t.Fatalf("append wrong: %q", b)
@@ -51,8 +51,8 @@ func TestFsOutAppend(t *testing.T) {
 
 func TestFsOutDeleteAndCreateDir(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "nested")
-	os.MkdirAll(dir, 0755)
-	os.WriteFile(filepath.Join(dir, "d.txt"), []byte("old"), 0644)
+	_ = os.MkdirAll(dir, 0755)
+	_ = os.WriteFile(filepath.Join(dir, "d.txt"), []byte("old"), 0644)
 	n := newNode(&FsOutConfig{Location: dir, Filename: "d.txt", OverwriteFile: "delete"})
 	if _, err := n.Execute(context.Background(), nodestore.NewMessage().SetPayload("new")); err != nil {
 		t.Fatalf("execute failed: %v", err)

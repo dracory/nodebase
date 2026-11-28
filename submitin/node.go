@@ -174,7 +174,7 @@ func (n *SubmitNode) Execute(ctx context.Context, input nodestore.MessageInterfa
 	n.serverMu.Lock()
 	defer n.serverMu.Unlock()
 	if n.server != nil {
-		listener.Close()
+		_ = listener.Close()
 		return nil, fmt.Errorf("submit listener already running")
 	}
 	n.params = params
@@ -305,7 +305,7 @@ func (n *SubmitNode) handleRequest(w http.ResponseWriter, r *http.Request) {
 	n.host.DiscardPending(msgID)
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"msgid": msgID,
 		"size":  len(data),
 	})

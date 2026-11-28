@@ -78,10 +78,10 @@ func waitFor(t *testing.T, cond func() bool, what string) {
 
 func TestTailFollowsAppends(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "log.txt")
-	os.WriteFile(path, []byte("old\n"), 0644)
+	_ = os.WriteFile(path, []byte("old\n"), 0644)
 	host := &fakeHost{}
 	n := newNode(&TailConfig{Filename: path, Interval: 0.02}, host)
-	defer n.Stop()
+	defer func() { _ = n.Stop() }()
 
 	out, err := n.Execute(context.Background(), nodestore.NewMessage())
 	if err != nil {
@@ -92,8 +92,8 @@ func TestTailFollowsAppends(t *testing.T) {
 	}
 	// append new lines — the node starts at EOF so "old" is not emitted
 	f, _ := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0644)
-	f.WriteString("new-line\npartial")
-	f.Close()
+	_ = f.WriteString("new-line\npartial")
+	_ = f.Close()
 	waitFor(t, func() bool { return len(host.emittedMsgs()) >= 1 }, "line emission")
 	emitted := host.emittedMsgs()
 	if emitted[0].GetPayload() != "new-line" {
@@ -106,11 +106,11 @@ func TestTailFollowsAppends(t *testing.T) {
 
 func TestTailFromStart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "log.txt")
-	os.WriteFile(path, []byte("first\nsecond\n"), 0644)
+	_ = os.WriteFile(path, []byte("first\nsecond\n"), 0644)
 	host := &fakeHost{}
 	n := newNode(&TailConfig{Filename: path, Interval: 0.02, FromStart: true}, host)
-	defer n.Stop()
-	n.Execute(context.Background(), nodestore.NewMessage())
+	defer func() { _ = n.Stop() }()
+	_, _ = n.Execute(context.Background(), nodestore.NewMessage())
 	waitFor(t, func() bool { return len(host.emittedMsgs()) >= 2 }, "backlog emission")
 	if m := host.emittedMsgs()[0]; m.GetPayload() != "first" {
 		t.Fatalf("fromStart should replay existing content: %v", m.GetPayload())
@@ -121,9 +121,9 @@ func TestTailBinary(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "bin.dat")
 	host := &fakeHost{}
 	n := newNode(&TailConfig{Filename: path, Interval: 0.02, Filetype: "binary"}, host)
-	defer n.Stop()
-	n.Execute(context.Background(), nodestore.NewMessage())
-	os.WriteFile(path, []byte{1, 2, 3}, 0644)
+	defer func() { _ = n.Stop() }()
+	_, _ = n.Execute(context.Background(), nodestore.NewMessage())
+	_ = os.WriteFile(path, []byte{1, 2, 3}, 0644)
 	waitFor(t, func() bool { return len(host.emittedMsgs()) >= 1 }, "binary emission")
 	if b, ok := host.emittedMsgs()[0].GetPayload().([]byte); !ok || len(b) != 3 {
 		t.Fatalf("binary chunk wrong: %v", host.emittedMsgs()[0].GetPayload())
@@ -134,9 +134,9 @@ func TestTailCustomSeparator(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "log.txt")
 	host := &fakeHost{}
 	n := newNode(&TailConfig{Filename: path, Interval: 0.02, Split: `\r\n`}, host)
-	defer n.Stop()
-	n.Execute(context.Background(), nodestore.NewMessage())
-	os.WriteFile(path, []byte("a\r\nb\r\n"), 0644)
+	defer func() { _ = n.Stop() }()
+	_, _ = n.Execute(context.Background(), nodestore.NewMessage())
+	_ = os.WriteFile(path, []byte("a\r\nb\r\n"), 0644)
 	waitFor(t, func() bool { return len(host.emittedMsgs()) >= 2 }, "crlf emission")
 	emitted := host.emittedMsgs()
 	if emitted[0].GetPayload() != "a" || emitted[1].GetPayload() != "b" {

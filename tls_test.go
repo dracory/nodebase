@@ -45,14 +45,14 @@ func TestTLSConfigBuildCA(t *testing.T) {
 	}
 	// file with no PEM certs
 	bad := filepath.Join(dir, "bad.pem")
-	os.WriteFile(bad, []byte("not a pem"), 0644)
+	_ = os.WriteFile(bad, []byte("not a pem"), 0644)
 	if _, err := (&TLSConfig{CAPath: bad}).Build(); err == nil {
 		t.Fatal("garbage CA should error")
 	}
 	// valid self-signed CA
 	certPEM, keyPEM := selfSignedPEM(t)
 	ca := filepath.Join(dir, "ca.pem")
-	os.WriteFile(ca, certPEM, 0644)
+	_ = os.WriteFile(ca, certPEM, 0644)
 	cfg, err := (&TLSConfig{CAPath: ca, VerifyServerCert: true}).Build()
 	if err != nil {
 		t.Fatalf("valid CA rejected: %v", err)
@@ -63,8 +63,8 @@ func TestTLSConfigBuildCA(t *testing.T) {
 	// cert+key pair loads into Certificates
 	cert := filepath.Join(dir, "cert.pem")
 	key := filepath.Join(dir, "key.pem")
-	os.WriteFile(cert, certPEM, 0644)
-	os.WriteFile(key, keyPEM, 0644)
+	_ = os.WriteFile(cert, certPEM, 0644)
+	_ = os.WriteFile(key, keyPEM, 0644)
 	cfg, err = (&TLSConfig{CertPath: cert, KeyPath: key}).Build()
 	if err != nil {
 		t.Fatalf("cert/key load failed: %v", err)
@@ -73,7 +73,7 @@ func TestTLSConfigBuildCA(t *testing.T) {
 		t.Fatal("certificate pair not loaded")
 	}
 	// mismatched pair errors
-	os.WriteFile(key, []byte("garbage"), 0644)
+	_ = os.WriteFile(key, []byte("garbage"), 0644)
 	if _, err := (&TLSConfig{CertPath: cert, KeyPath: key}).Build(); err == nil {
 		t.Fatal("bad key should error")
 	}

@@ -146,11 +146,11 @@ func TestMailOutExecuteErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen failed: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	go func() {
 		conn, err := ln.Accept()
 		if err == nil {
-			conn.Close()
+			_ = conn.Close()
 		}
 	}()
 	port := ln.Addr().(*net.TCPAddr).Port

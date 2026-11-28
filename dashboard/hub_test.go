@@ -212,7 +212,7 @@ func TestStateReachesClient(t *testing.T) {
 
 	conn, closeSrv := dialWS(t, hub, "?flow=wf1")
 	defer closeSrv()
-	defer conn.Close(websocket.StatusNormalClosure, "")
+	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
 
 	first := readMsg(t, conn)
 	if first["type"] != "manifest" {
@@ -254,7 +254,7 @@ func TestLateJoinReplay(t *testing.T) {
 
 	conn, closeSrv := dialWS(t, hub, "?flow=wf1")
 	defer closeSrv()
-	defer conn.Close(websocket.StatusNormalClosure, "")
+	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
 
 	m := readMsg(t, conn)
 	state, _ := m["state"].(map[string]interface{})
@@ -276,7 +276,7 @@ func TestClientInputInjection(t *testing.T) {
 
 	conn, closeSrv := dialWS(t, hub, "?flow=wf1")
 	defer closeSrv()
-	defer conn.Close(websocket.StatusNormalClosure, "")
+	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
 	_ = readMsg(t, conn) // manifest
 
 	frame := `{"type":"input","node":"b1","payload":"go"}`
@@ -324,7 +324,7 @@ func TestUndeployClosesClients(t *testing.T) {
 
 	conn, closeSrv := dialWS(t, hub, "?flow=wf1")
 	defer closeSrv()
-	defer conn.Close(websocket.StatusNormalClosure, "")
+	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
 	_ = readMsg(t, conn)
 
 	// A real host stops reporting the flow running on undeploy.
@@ -350,7 +350,7 @@ func TestRedeployPushesFreshManifest(t *testing.T) {
 
 	conn, closeSrv := dialWS(t, hub, "?flow=wf1")
 	defer closeSrv()
-	defer conn.Close(websocket.StatusNormalClosure, "")
+	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
 	_ = readMsg(t, conn)
 
 	wf2 := nodestore.NewWorkflow("wf1").SetID("wf1").SetNodes([]nodestore.NodeInterface{
@@ -398,7 +398,7 @@ func TestResolveFlowDefault(t *testing.T) {
 
 	conn, closeSrv := dialWS(t, hub, "")
 	defer closeSrv()
-	defer conn.Close(websocket.StatusNormalClosure, "")
+	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
 	m := readMsg(t, conn)
 	if m["workflow"] != "only" {
 		t.Fatalf("default flow resolution failed: %v", m)

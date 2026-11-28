@@ -272,7 +272,7 @@ func TestFunctionEnv(t *testing.T) {
 func TestFunctionWarnLog(t *testing.T) {
 	host := newFakeHost()
 	n := newNode(`node.warn("w1"); node.log("l1"); return null;`, host)
-	n.Execute(context.Background(), msg(1))
+	_, _ = n.Execute(context.Background(), msg(1))
 	if len(host.events) != 2 || !strings.HasPrefix(host.events[0], "warn:") || !strings.HasPrefix(host.events[1], "info:") {
 		t.Fatalf("warn/log events wrong: %v", host.events)
 	}

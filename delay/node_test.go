@@ -173,7 +173,7 @@ func TestDelayResetClearsHeld(t *testing.T) {
 	// message's own pending release — without sending anything.
 	n, host := newNode(&DelayConfig{PauseType: "delay", Timeout: 60, TimeoutUnits: "seconds"})
 	ctx := context.Background()
-	n.Execute(ctx, nodestore.NewMessage().SetPayload("held"))
+	_, _ = n.Execute(ctx, nodestore.NewMessage().SetPayload("held"))
 	out, _ := n.Execute(ctx, nodestore.NewMessage().SetMetadata(map[string]interface{}{"reset": true}))
 	if out != nil {
 		t.Fatal("reset message should be consumed")
@@ -189,7 +189,7 @@ func TestDelayFlushReleasesHeld(t *testing.T) {
 	// the whole held list — including itself (Node-RED semantics).
 	n, host := newNode(&DelayConfig{PauseType: "delay", Timeout: 60, TimeoutUnits: "seconds"})
 	ctx := context.Background()
-	n.Execute(ctx, nodestore.NewMessage().SetPayload("held"))
+	_, _ = n.Execute(ctx, nodestore.NewMessage().SetPayload("held"))
 	out, _ := n.Execute(ctx, nodestore.NewMessage().SetPayload("f").
 		SetMetadata(map[string]interface{}{"flush": true}))
 	if out != nil {
@@ -206,7 +206,7 @@ func TestDelayPureFlushNotHeld(t *testing.T) {
 	// releases the held list without entering it.
 	n, host := newNode(&DelayConfig{PauseType: "delay", Timeout: 60, TimeoutUnits: "seconds"})
 	ctx := context.Background()
-	n.Execute(ctx, nodestore.NewMessage().SetPayload("held"))
+	_, _ = n.Execute(ctx, nodestore.NewMessage().SetPayload("held"))
 	out, _ := n.Execute(ctx, nodestore.NewMessage().SetMetadata(map[string]interface{}{"flush": true}))
 	if out != nil {
 		t.Fatal("flush control should be consumed")
@@ -240,9 +240,9 @@ func TestRateLimitQueueFIFO(t *testing.T) {
 		PauseType: "rate", Rate: 1, NbRateUnits: 30, RateUnits: "milliseconds",
 	})
 	ctx := context.Background()
-	n.Execute(ctx, nodestore.NewMessage().SetPayload("1"))
-	n.Execute(ctx, nodestore.NewMessage().SetPayload("2"))
-	n.Execute(ctx, nodestore.NewMessage().SetPayload("3"))
+	_, _ = n.Execute(ctx, nodestore.NewMessage().SetPayload("1"))
+	_, _ = n.Execute(ctx, nodestore.NewMessage().SetPayload("2"))
+	_, _ = n.Execute(ctx, nodestore.NewMessage().SetPayload("3"))
 	waitFor(t, func() bool { return len(host.emittedMsgs()) == 2 }, "two queued releases")
 	em := host.emittedMsgs()
 	if em[0].GetPayload() != "2" || em[1].GetPayload() != "3" {
@@ -255,9 +255,9 @@ func TestRateLimitDropKeepsLatest(t *testing.T) {
 		PauseType: "rate", Rate: 1, NbRateUnits: 40, RateUnits: "milliseconds", Drop: true,
 	})
 	ctx := context.Background()
-	n.Execute(ctx, nodestore.NewMessage().SetPayload("1"))
-	n.Execute(ctx, nodestore.NewMessage().SetPayload("2")) // dropped — replaced
-	n.Execute(ctx, nodestore.NewMessage().SetPayload("3")) // latest kept
+	_, _ = n.Execute(ctx, nodestore.NewMessage().SetPayload("1"))
+	_, _ = n.Execute(ctx, nodestore.NewMessage().SetPayload("2")) // dropped — replaced
+	_, _ = n.Execute(ctx, nodestore.NewMessage().SetPayload("3")) // latest kept
 	waitFor(t, func() bool { return len(host.emittedMsgs()) == 1 }, "latest release")
 	if got := host.emittedMsgs()[0].GetPayload(); got != "3" {
 		t.Fatalf("drop mode should release the latest, got %v", got)
@@ -278,8 +278,8 @@ func TestRateLimitTopicMode(t *testing.T) {
 		t.Fatal("first msg of topic b should pass — independent bucket")
 	}
 	// Intermediates per topic auto-drop; latest per topic is released.
-	n.Execute(ctx, nodestore.NewMessage().SetPayload("a2").SetMetadata(meta("a")))
-	n.Execute(ctx, nodestore.NewMessage().SetPayload("a3").SetMetadata(meta("a")))
+	_, _ = n.Execute(ctx, nodestore.NewMessage().SetPayload("a2").SetMetadata(meta("a")))
+	_, _ = n.Execute(ctx, nodestore.NewMessage().SetPayload("a3").SetMetadata(meta("a")))
 	waitFor(t, func() bool { return len(host.emittedMsgs()) == 1 }, "topic release")
 	if got := host.emittedMsgs()[0].GetPayload(); got != "a3" {
 		t.Fatalf("topic mode should keep the latest per topic, got %v", got)
@@ -291,8 +291,8 @@ func TestRateLimitReset(t *testing.T) {
 		PauseType: "rate", Rate: 1, NbRateUnits: 60, RateUnits: "milliseconds",
 	})
 	ctx := context.Background()
-	n.Execute(ctx, nodestore.NewMessage().SetPayload("1"))
-	n.Execute(ctx, nodestore.NewMessage().SetPayload("held"))
+	_, _ = n.Execute(ctx, nodestore.NewMessage().SetPayload("1"))
+	_, _ = n.Execute(ctx, nodestore.NewMessage().SetPayload("held"))
 	out, _ := n.Execute(ctx, nodestore.NewMessage().SetMetadata(map[string]interface{}{"reset": true}))
 	if out != nil {
 		t.Fatal("reset message should be consumed")
@@ -308,14 +308,14 @@ func TestRateLimitFlush(t *testing.T) {
 		PauseType: "rate", Rate: 1, NbRateUnits: 500, RateUnits: "milliseconds",
 	})
 	ctx := context.Background()
-	n.Execute(ctx, nodestore.NewMessage().SetPayload("1"))
-	n.Execute(ctx, nodestore.NewMessage().SetPayload("2"))
-	n.Execute(ctx, nodestore.NewMessage().SetPayload("3"))
-	n.Execute(ctx, nodestore.NewMessage().SetMetadata(map[string]interface{}{"flush": 1}))
+	_, _ = n.Execute(ctx, nodestore.NewMessage().SetPayload("1"))
+	_, _ = n.Execute(ctx, nodestore.NewMessage().SetPayload("2"))
+	_, _ = n.Execute(ctx, nodestore.NewMessage().SetPayload("3"))
+	_, _ = n.Execute(ctx, nodestore.NewMessage().SetMetadata(map[string]interface{}{"flush": 1}))
 	if em := host.emittedMsgs(); len(em) != 1 || em[0].GetPayload() != "2" {
 		t.Fatalf("flush=1 should release one held message, got %v", em)
 	}
-	n.Execute(ctx, nodestore.NewMessage().SetMetadata(map[string]interface{}{"flush": true}))
+	_, _ = n.Execute(ctx, nodestore.NewMessage().SetMetadata(map[string]interface{}{"flush": true}))
 	if em := host.emittedMsgs(); len(em) != 2 || em[1].GetPayload() != "3" {
 		t.Fatalf("flush=true should release all held, got %v", em)
 	}
@@ -326,9 +326,9 @@ func TestRateLimitToFront(t *testing.T) {
 		PauseType: "rate", Rate: 1, NbRateUnits: 50, RateUnits: "milliseconds",
 	})
 	ctx := context.Background()
-	n.Execute(ctx, nodestore.NewMessage().SetPayload("1"))
-	n.Execute(ctx, nodestore.NewMessage().SetPayload("2"))
-	n.Execute(ctx, nodestore.NewMessage().SetPayload("vip").
+	_, _ = n.Execute(ctx, nodestore.NewMessage().SetPayload("1"))
+	_, _ = n.Execute(ctx, nodestore.NewMessage().SetPayload("2"))
+	_, _ = n.Execute(ctx, nodestore.NewMessage().SetPayload("vip").
 		SetMetadata(map[string]interface{}{"toFront": true}))
 	waitFor(t, func() bool { return len(host.emittedMsgs()) == 1 }, "toFront release")
 	if got := host.emittedMsgs()[0].GetPayload(); got != "vip" {
@@ -359,8 +359,8 @@ func TestRateLimitDroppedToOutput2(t *testing.T) {
 	if out, _ := n.Execute(ctx, nodestore.NewMessage().SetPayload("1")); out == nil {
 		t.Fatal("first message should pass immediately")
 	}
-	n.Execute(ctx, nodestore.NewMessage().SetPayload("2")) // kept as latest
-	n.Execute(ctx, nodestore.NewMessage().SetPayload("3")) // displaces "2"
+	_, _ = n.Execute(ctx, nodestore.NewMessage().SetPayload("2")) // kept as latest
+	_, _ = n.Execute(ctx, nodestore.NewMessage().SetPayload("3")) // displaces "2"
 	waitFor(t, func() bool { return len(host.emittedRecs()) == 1 }, "dropped emit")
 	rec := host.emittedRecs()[0]
 	if rec.msg.GetPayload() != "2" || len(rec.ports) != 1 || rec.ports[0] != "output_2" {
@@ -382,9 +382,9 @@ func TestRateLimitDroppedDiscardedWithoutOutput2(t *testing.T) {
 		PauseType: "rate", Rate: 1, NbRateUnits: 40, RateUnits: "milliseconds", Drop: true,
 	})
 	ctx := context.Background()
-	n.Execute(ctx, nodestore.NewMessage().SetPayload("1"))
-	n.Execute(ctx, nodestore.NewMessage().SetPayload("2"))
-	n.Execute(ctx, nodestore.NewMessage().SetPayload("3"))
+	_, _ = n.Execute(ctx, nodestore.NewMessage().SetPayload("1"))
+	_, _ = n.Execute(ctx, nodestore.NewMessage().SetPayload("2"))
+	_, _ = n.Execute(ctx, nodestore.NewMessage().SetPayload("3"))
 	waitFor(t, func() bool { return len(host.emittedRecs()) == 1 }, "latest release")
 	if rec := host.emittedRecs()[0]; rec.msg.GetPayload() != "3" {
 		t.Fatalf("only the latest should release, got %v", rec.msg.GetPayload())
@@ -400,9 +400,9 @@ func TestRateLimitDroppedToOutput2TopicMode(t *testing.T) {
 	})
 	ctx := context.Background()
 	meta := map[string]interface{}{"topic": "a"}
-	n.Execute(ctx, nodestore.NewMessage().SetPayload("a1").SetMetadata(meta))
-	n.Execute(ctx, nodestore.NewMessage().SetPayload("a2").SetMetadata(meta))
-	n.Execute(ctx, nodestore.NewMessage().SetPayload("a3").SetMetadata(meta))
+	_, _ = n.Execute(ctx, nodestore.NewMessage().SetPayload("a1").SetMetadata(meta))
+	_, _ = n.Execute(ctx, nodestore.NewMessage().SetPayload("a2").SetMetadata(meta))
+	_, _ = n.Execute(ctx, nodestore.NewMessage().SetPayload("a3").SetMetadata(meta))
 	waitFor(t, func() bool { return len(host.emittedRecs()) == 1 }, "dropped emit")
 	rec := host.emittedRecs()[0]
 	if rec.msg.GetPayload() != "a2" || len(rec.ports) != 1 || rec.ports[0] != "output_2" {
@@ -416,9 +416,9 @@ func TestRateLimitMsgRateOverride(t *testing.T) {
 		PauseType: "rate", Rate: 1, NbRateUnits: 60, RateUnits: "seconds", AllowRate: true,
 	})
 	ctx := context.Background()
-	n.Execute(ctx, nodestore.NewMessage().SetPayload("1"))
+	_, _ = n.Execute(ctx, nodestore.NewMessage().SetPayload("1"))
 	// msg.rate=30 (ms) shortens the interval so the queued msg releases soon.
-	n.Execute(ctx, nodestore.NewMessage().SetPayload("2").
+	_, _ = n.Execute(ctx, nodestore.NewMessage().SetPayload("2").
 		SetMetadata(map[string]interface{}{"rate": 30}))
 	waitFor(t, func() bool { return len(host.emittedMsgs()) == 1 }, "override-timed release")
 }

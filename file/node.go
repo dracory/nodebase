@@ -155,7 +155,7 @@ func (n *FileNode) Execute(ctx context.Context, input nodestore.MessageInterface
 	if err != nil {
 		return nil, fmt.Errorf("file node open failed: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if _, err := f.Write(content); err != nil {
 		return nil, fmt.Errorf("file node write failed: %w", err)
 	}

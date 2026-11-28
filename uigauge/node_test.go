@@ -63,7 +63,7 @@ func TestUIGauge(t *testing.T) {
 	}
 
 	before := len(sk.states)
-	n.Execute(context.Background(), nodestore.NewMessage().SetPayload("not a number"))
+	_, _ = n.Execute(context.Background(), nodestore.NewMessage().SetPayload("not a number"))
 	if len(sk.states) != before {
 		t.Fatal("non-numeric payload pushed state")
 	}

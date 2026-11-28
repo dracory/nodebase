@@ -63,11 +63,11 @@ func TestUDPInReceives(t *testing.T) {
 	// grab a free port first
 	probe, _ := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
 	port := probe.LocalAddr().(*net.UDPAddr).Port
-	probe.Close()
+	_ = probe.Close()
 
 	host := &fakeHost{}
 	n := NewUDPInNode(nodestore.NewNode("u1", "udpIn").SetWorkflowID("wf"), &UDPInConfig{Port: port}, host)
-	defer n.Stop()
+	defer func() { _ = n.Stop() }()
 
 	out, err := n.Execute(context.Background(), nodestore.NewMessage())
 	if err != nil {
@@ -81,8 +81,8 @@ func TestUDPInReceives(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial failed: %v", err)
 	}
-	defer sender.Close()
-	sender.Write([]byte("ping"))
+	defer func() { _ = sender.Close() }()
+	_, _ = sender.Write([]byte("ping"))
 
 	deadline := time.Now().Add(3 * time.Second)
 	for len(host.emittedMsgs()) == 0 && time.Now().Before(deadline) {
@@ -104,18 +104,18 @@ func TestUDPInReceives(t *testing.T) {
 func TestUDPInDatatypeBuffer(t *testing.T) {
 	probe, _ := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
 	port := probe.LocalAddr().(*net.UDPAddr).Port
-	probe.Close()
+	_ = probe.Close()
 
 	host := &fakeHost{}
 	n := NewUDPInNode(nodestore.NewNode("u1", "udpIn").SetWorkflowID("wf"),
 		&UDPInConfig{Port: port, Datatype: "buffer"}, host)
-	defer n.Stop()
+	defer func() { _ = n.Stop() }()
 	if _, err := n.Execute(context.Background(), nodestore.NewMessage()); err != nil {
 		t.Fatalf("execute failed: %v", err)
 	}
 	sender, _ := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: port})
-	defer sender.Close()
-	sender.Write([]byte{0xDE, 0xAD})
+	defer func() { _ = sender.Close() }()
+	_, _ = sender.Write([]byte{0xDE, 0xAD})
 
 	deadline := time.Now().Add(3 * time.Second)
 	for len(host.emittedMsgs()) == 0 && time.Now().Before(deadline) {
@@ -134,12 +134,12 @@ func TestUDPInMulticast(t *testing.T) {
 	// multicast "true" + group joins a multicast group (Node-RED fields).
 	probe, _ := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
 	port := probe.LocalAddr().(*net.UDPAddr).Port
-	probe.Close()
+	_ = probe.Close()
 
 	host := &fakeHost{}
 	n := NewUDPInNode(nodestore.NewNode("u1", "udpIn").SetWorkflowID("wf"),
 		&UDPInConfig{Port: port, Multicast: "true", Group: "224.0.0.251", Datatype: "utf8"}, host)
-	defer n.Stop()
+	defer func() { _ = n.Stop() }()
 	if _, err := n.Execute(context.Background(), nodestore.NewMessage()); err != nil {
 		t.Skipf("multicast unavailable in this environment: %v", err)
 	}
@@ -147,10 +147,10 @@ func TestUDPInMulticast(t *testing.T) {
 	if err != nil {
 		t.Skipf("multicast send unavailable: %v", err)
 	}
-	defer sender.Close()
+	defer func() { _ = sender.Close() }()
 	deadline := time.Now().Add(3 * time.Second)
 	for len(host.emittedMsgs()) == 0 && time.Now().Before(deadline) {
-		sender.Write([]byte("mcast"))
+		_, _ = sender.Write([]byte("mcast"))
 		time.Sleep(100 * time.Millisecond)
 	}
 	emitted := host.emittedMsgs()

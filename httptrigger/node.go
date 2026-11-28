@@ -206,7 +206,7 @@ func (n *HTTPTrigger) Execute(ctx context.Context, input nodestore.MessageInterf
 	n.serverMu.Lock()
 	defer n.serverMu.Unlock()
 	if n.server != nil {
-		listener.Close()
+		_ = listener.Close()
 		return nil, fmt.Errorf("HTTP server already running")
 	}
 	n.params = params
@@ -366,18 +366,18 @@ func (n *HTTPTrigger) handleRequest(w http.ResponseWriter, r *http.Request) {
 		// Strings and bytes go out raw; anything else is JSON-encoded.
 		switch body := response.GetPayload().(type) {
 		case string:
-			w.Write([]byte(body))
+			_, _ = w.Write([]byte(body))
 		case []byte:
-			w.Write(body)
+			_, _ = w.Write(body)
 		default:
-			json.NewEncoder(w).Encode(response.GetPayload())
+			_ = json.NewEncoder(w).Encode(response.GetPayload())
 		}
 	case <-time.After(n.responseTimeout()):
 		// No httpResponse node in the flow (or the flow stalled)
 		n.host.DiscardPending(msgID)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusGatewayTimeout)
-		json.NewEncoder(w).Encode(map[string]string{
+		_ = json.NewEncoder(w).Encode(map[string]string{
 			"error": "flow produced no response within the response timeout — is an httpResponse node wired downstream?",
 		})
 	case <-r.Context().Done():

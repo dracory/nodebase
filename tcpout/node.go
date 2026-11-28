@@ -241,7 +241,7 @@ func (n *TCPOutNode) acceptLoop(listener net.Listener) {
 		if err != nil {
 			return // listener closed (Stop) or fatal — either way we exit
 		}
-		conn.(*net.TCPConn).SetKeepAlive(true)
+		_ = conn.(*net.TCPConn).SetKeepAlive(true)
 		n.state.mu.Lock()
 		n.state.conns[conn] = true
 		n.state.mu.Unlock()

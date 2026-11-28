@@ -83,10 +83,10 @@ func waitFor(t *testing.T, cond func() bool, what string) {
 
 func TestFsInPoll(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("data-a"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, "a.txt"), []byte("data-a"), 0644)
 	host := &fakeHost{}
 	n := newNode(&FsInConfig{Location: dir, Interval: 0.02}, host)
-	defer n.Stop()
+	defer func() { _ = n.Stop() }()
 
 	out, err := n.Execute(context.Background(), nodestore.NewMessage())
 	if err != nil {
@@ -107,11 +107,11 @@ func TestFsInPoll(t *testing.T) {
 
 func TestFsInPatternAndBinary(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "keep.xml"), []byte("\x01"), 0644)
-	os.WriteFile(filepath.Join(dir, "skip.txt"), []byte("x"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, "keep.xml"), []byte("\x01"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, "skip.txt"), []byte("x"), 0644)
 	host := &fakeHost{}
 	n := newNode(&FsInConfig{Location: dir, Interval: 0.02, Pattern: "*.xml", Format: "binary"}, host)
-	defer n.Stop()
+	defer func() { _ = n.Stop() }()
 	if _, err := n.Execute(context.Background(), nodestore.NewMessage()); err != nil {
 		t.Fatalf("execute failed: %v", err)
 	}
@@ -129,11 +129,11 @@ func TestFsInPatternAndBinary(t *testing.T) {
 func TestFsInPathFormat(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "f.txt")
-	os.WriteFile(p, []byte("x"), 0644)
+	_ = os.WriteFile(p, []byte("x"), 0644)
 	host := &fakeHost{}
 	n := newNode(&FsInConfig{Location: dir, Interval: 0.02, Format: "path"}, host)
-	defer n.Stop()
-	n.Execute(context.Background(), nodestore.NewMessage())
+	defer func() { _ = n.Stop() }()
+	_, _ = n.Execute(context.Background(), nodestore.NewMessage())
 	waitFor(t, func() bool { return len(host.emittedMsgs()) >= 1 }, "path emission")
 	emitted := host.emittedMsgs()
 	if emitted[0].GetPayload() != filepath.Join(dir, "f.txt") {
@@ -144,11 +144,11 @@ func TestFsInPathFormat(t *testing.T) {
 func TestFsInDeleteAfterEmit(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "gone.txt")
-	os.WriteFile(p, []byte("x"), 0644)
+	_ = os.WriteFile(p, []byte("x"), 0644)
 	host := &fakeHost{}
 	n := newNode(&FsInConfig{Location: dir, Interval: 0.02, Delete: true}, host)
-	defer n.Stop()
-	n.Execute(context.Background(), nodestore.NewMessage())
+	defer func() { _ = n.Stop() }()
+	_, _ = n.Execute(context.Background(), nodestore.NewMessage())
 	waitFor(t, func() bool { return len(host.emittedMsgs()) >= 1 }, "emission")
 	waitFor(t, func() bool {
 		_, err := os.Stat(p)

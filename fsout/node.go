@@ -174,7 +174,7 @@ func (n *FsOutNode) Execute(ctx context.Context, input nodestore.MessageInterfac
 	if err != nil {
 		return nil, fmt.Errorf("fsOut: %w", err)
 	}
-	defer fsys.Close()
+	defer func() { _ = fsys.Close() }()
 	// Local locators honour the FileRoot sandbox like file/fileIn;
 	// remote locators are inherently outside it.
 	if _, local := fsys.(nodebase.LocalFs); local && n.host != nil && n.host.FileRootPath() != "" {

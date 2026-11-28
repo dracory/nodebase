@@ -90,7 +90,7 @@ func TestResponseStatusPrecedence(t *testing.T) {
 		"msgId":      "m1",
 		"statusCode": float64(404),
 	})
-	n.Execute(context.Background(), msg)
+	_, _ = n.Execute(context.Background(), msg)
 	if msg.GetMetadata()["statusCode"] != 404 {
 		t.Fatalf("metadata statusCode should win: %v", msg.GetMetadata()["statusCode"])
 	}
@@ -98,7 +98,7 @@ func TestResponseStatusPrecedence(t *testing.T) {
 	// payload statusCode beats config when metadata absent
 	msg2 := nodestore.NewMessage().SetPayload(map[string]interface{}{"statusCode": float64(503)})
 	msg2.SetMetadata(map[string]interface{}{"msgId": "m2"})
-	n.Execute(context.Background(), msg2)
+	_, _ = n.Execute(context.Background(), msg2)
 	if msg2.GetMetadata()["statusCode"] != 503 {
 		t.Fatalf("payload statusCode should win over config: %v", msg2.GetMetadata()["statusCode"])
 	}
@@ -114,7 +114,7 @@ func TestResponseHeadersMerge(t *testing.T) {
 		"msgId":   "m1",
 		"headers": map[string]interface{}{"X-D": "4"},
 	})
-	n.Execute(context.Background(), msg)
+	_, _ = n.Execute(context.Background(), msg)
 	h := msg.GetMetadata()["responseHeaders"].(map[string]string)
 	if h["X-A"] != "1" || h["X-B"] != "msg" || h["X-C"] != "3" || h["X-D"] != "4" {
 		t.Fatalf("header merge wrong: %v", h)

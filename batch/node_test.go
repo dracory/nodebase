@@ -132,10 +132,10 @@ func TestBatchCount(t *testing.T) {
 func TestBatchCountOverlap(t *testing.T) {
 	n, host := newNode(&BatchConfig{Mode: "count", Count: 2, Overlap: 1})
 	ctx := context.Background()
-	n.Execute(ctx, nodestore.NewMessage().SetPayload("a"))
-	n.Execute(ctx, nodestore.NewMessage().SetPayload("b"))
+	_, _ = n.Execute(ctx, nodestore.NewMessage().SetPayload("a"))
+	_, _ = n.Execute(ctx, nodestore.NewMessage().SetPayload("b"))
 	// overlap keeps "b" → next batch needs only one more
-	n.Execute(ctx, nodestore.NewMessage().SetPayload("c"))
+	_, _ = n.Execute(ctx, nodestore.NewMessage().SetPayload("c"))
 	emitted := host.waitFor(4, 2*time.Second)
 	if len(emitted) != 4 {
 		t.Fatalf("expected two 2-message sequences, got %d", len(emitted))
@@ -157,8 +157,8 @@ func TestBatchHonourParts(t *testing.T) {
 		return m
 	}
 	// a completed incoming sequence flushes the batch early
-	n.Execute(ctx, mk("g1", 0, 2, "x"))
-	n.Execute(ctx, mk("g1", 1, 2, "y"))
+	_, _ = n.Execute(ctx, mk("g1", 0, 2, "x"))
+	_, _ = n.Execute(ctx, mk("g1", 1, 2, "y"))
 	emitted := host.waitFor(2, 2*time.Second)
 	if got := payloads(emitted); len(got) != 2 || got[0] != "x" || got[1] != "y" {
 		t.Fatalf("honourParts should flush on sequence end: %v", got)
@@ -181,8 +181,8 @@ func TestBatchConcat(t *testing.T) {
 	if out, _ := n.Execute(ctx, mk(0, 1.0)); out != nil {
 		t.Fatal("incomplete concat should buffer")
 	}
-	n.Execute(ctx, mk(1, 2.0))
-	n.Execute(ctx, mk(2, "tail"))
+	_, _ = n.Execute(ctx, mk(1, 2.0))
+	_, _ = n.Execute(ctx, mk(2, "tail"))
 	emitted := host.waitFor(3, 2*time.Second)
 	got := payloads(emitted)
 	// the topic sequence is re-emitted as one renumbered sequence
@@ -211,7 +211,7 @@ func TestBatchInterval(t *testing.T) {
 	if err != nil || out != nil {
 		t.Fatal("interval mode should buffer")
 	}
-	n.Execute(ctx, nodestore.NewMessage().SetPayload("b"))
+	_, _ = n.Execute(ctx, nodestore.NewMessage().SetPayload("b"))
 	emitted := host.waitFor(2, 2*time.Second)
 	got := payloads(emitted)
 	if len(got) != 2 || got[0] != "a" || got[1] != "b" {

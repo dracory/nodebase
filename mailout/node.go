@@ -348,7 +348,7 @@ func smtpSend(host string, port int, security, username, password, from string, 
 		}
 		c = client
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	// starttls fails closed: a server that does not advertise the
 	// extension must never receive credentials over cleartext

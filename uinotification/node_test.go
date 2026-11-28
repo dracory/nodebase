@@ -64,7 +64,7 @@ func TestUINotification(t *testing.T) {
 	}
 
 	// map payload carries text + level
-	n.Execute(context.Background(), nodestore.NewMessage().SetPayload(map[string]interface{}{
+	_, _ = n.Execute(context.Background(), nodestore.NewMessage().SetPayload(map[string]interface{}{
 		"payload": map[string]interface{}{"text": "alarm", "level": "error"},
 	}))
 	if sk.states[1]["text"] != "alarm" || sk.states[1]["level"] != "error" {

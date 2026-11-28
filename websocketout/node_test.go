@@ -90,7 +90,7 @@ func wsPair(t *testing.T, host *fakeHost) *websocket.Conn {
 	if err != nil {
 		t.Fatalf("dial failed: %v", err)
 	}
-	t.Cleanup(func() { conn.Close(websocket.StatusNormalClosure, "done") })
+	t.Cleanup(func() { _ = conn.Close(websocket.StatusNormalClosure, "done") })
 	// wait for registration
 	deadline := time.Now().Add(2 * time.Second)
 	for {

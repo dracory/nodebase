@@ -153,7 +153,7 @@ func TestLinkOutConfigUnmarshal(t *testing.T) {
 		t.Fatalf("links wrong: %v", c.Links)
 	}
 	var c2 LinkOutConfig
-	json.Unmarshal([]byte(`{"links":["x"]}`), &c2)
+	_ = json.Unmarshal([]byte(`{"links":["x"]}`), &c2)
 	if len(c2.Links) != 1 {
 		t.Fatal("array links wrong")
 	}

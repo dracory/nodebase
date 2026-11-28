@@ -193,7 +193,7 @@ func decompressBytes(algorithm string, raw []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("compress: invalid %s input: %w", algorithm, err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	out, err := io.ReadAll(r)
 	if err != nil {
 		return nil, fmt.Errorf("compress: invalid %s input: %w", algorithm, err)

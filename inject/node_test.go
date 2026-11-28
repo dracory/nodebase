@@ -142,7 +142,7 @@ func TestInjectTopicAndUnits(t *testing.T) {
 // seconds (nothing before the delay, one message after).
 func TestInjectOnceDelay(t *testing.T) {
 	n, host := newHostedNode(&InjectConfig{Once: true, OnceDelay: 0.15, PayloadType: "string", Payload: "x"})
-	defer n.Stop()
+	defer func() { _ = n.Stop() }()
 	if _, err := n.Execute(context.Background(), nodestore.NewMessage()); err != nil {
 		t.Fatalf("execute failed: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestInjectOnceDelay(t *testing.T) {
 // TestInjectOnceImmediate — no onceDelay fires right away.
 func TestInjectOnceImmediate(t *testing.T) {
 	n, host := newHostedNode(&InjectConfig{Once: true, PayloadType: "string", Payload: "x"})
-	defer n.Stop()
+	defer func() { _ = n.Stop() }()
 	if _, err := n.Execute(context.Background(), nodestore.NewMessage()); err != nil {
 		t.Fatalf("execute failed: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestInjectOnceImmediate(t *testing.T) {
 // string) drives the interval when Interval is unset.
 func TestInjectRepeatField(t *testing.T) {
 	n, host := newHostedNode(&InjectConfig{Repeat: "0.05", PayloadType: "string", Payload: "x"})
-	defer n.Stop()
+	defer func() { _ = n.Stop() }()
 	if got := n.repeatInterval(); got != 50*time.Millisecond {
 		t.Fatalf("expected 50ms repeat interval, got %v", got)
 	}
@@ -186,7 +186,7 @@ func TestInjectTimeOfDayFires(t *testing.T) {
 		PayloadType: "string",
 		Payload:     "x",
 	})
-	defer n.Stop()
+	defer func() { _ = n.Stop() }()
 	if _, err := n.Execute(context.Background(), nodestore.NewMessage()); err != nil {
 		t.Fatalf("execute failed: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestInjectTimeOfDayWeekdaySkip(t *testing.T) {
 		PayloadType: "string",
 		Payload:     "x",
 	})
-	defer n.Stop()
+	defer func() { _ = n.Stop() }()
 	if _, err := n.Execute(context.Background(), nodestore.NewMessage()); err != nil {
 		t.Fatalf("execute failed: %v", err)
 	}

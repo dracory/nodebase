@@ -59,8 +59,8 @@ func TestUnknownDropsMessage(t *testing.T) {
 func TestUnknownWarnsOnce(t *testing.T) {
 	host := &fakeHost{}
 	n := NewUnknownNode(nodestore.NewNode("u1", "mystery").SetWorkflowID("wf"), host)
-	n.Execute(context.Background(), nodestore.NewMessage())
-	n.Execute(context.Background(), nodestore.NewMessage())
+	_, _ = n.Execute(context.Background(), nodestore.NewMessage())
+	_, _ = n.Execute(context.Background(), nodestore.NewMessage())
 	if len(host.events) != 1 {
 		t.Fatalf("warning should fire once, got %v", host.events)
 	}

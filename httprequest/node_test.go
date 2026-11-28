@@ -90,7 +90,7 @@ func TestRequestGet(t *testing.T) {
 		if r.Header.Get("X-Custom") != "v" {
 			t.Errorf("custom header missing")
 		}
-		w.Write([]byte("plain-body"))
+		_, _ = w.Write([]byte("plain-body"))
 	}))
 	defer srv.Close()
 
@@ -110,9 +110,9 @@ func TestRequestJSONBody(t *testing.T) {
 	var gotCT string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotCT = r.Header.Get("Content-Type")
-		json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.Write([]byte(`{"ok":true}`))
+		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
 	defer srv.Close()
 
@@ -139,7 +139,7 @@ func TestRequestBasicAuth(t *testing.T) {
 	var ok bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, pass, ok = r.BasicAuth()
-		w.Write([]byte("x"))
+		_, _ = w.Write([]byte("x"))
 	}))
 	defer srv.Close()
 	n := newNode(&HTTPRequestConfig{URL: srv.URL, Username: "u", Password: "p"})
@@ -152,12 +152,12 @@ func TestRequestBasicAuth(t *testing.T) {
 	// explicit Authorization header wins over config credentials
 	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, _, _ = r.BasicAuth()
-		w.Write([]byte("x"))
+		_, _ = w.Write([]byte("x"))
 	}))
 	defer srv2.Close()
 	n2 := newNode(&HTTPRequestConfig{URL: srv2.URL, Username: "u", Password: "p",
 		Headers: map[string]string{"Authorization": "Bearer tok"}})
-	n2.Execute(context.Background(), nodestore.NewMessage())
+	_, _ = n2.Execute(context.Background(), nodestore.NewMessage())
 	if user != "" {
 		t.Fatal("explicit Authorization should win")
 	}
@@ -165,7 +165,7 @@ func TestRequestBasicAuth(t *testing.T) {
 
 func TestRequestMsgURLOverride(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("from-msg"))
+		_, _ = w.Write([]byte("from-msg"))
 	}))
 	defer srv.Close()
 	n := newNode(&HTTPRequestConfig{})

@@ -80,7 +80,7 @@ func TestWatchEmitsChanges(t *testing.T) {
 	dir := t.TempDir()
 	host := &fakeHost{}
 	n := newNode(&WatchConfig{Filename: dir, Interval: 0.02}, host)
-	defer n.Stop()
+	defer func() { _ = n.Stop() }()
 
 	out, err := n.Execute(context.Background(), nodestore.NewMessage())
 	if err != nil {
@@ -92,7 +92,7 @@ func TestWatchEmitsChanges(t *testing.T) {
 
 	// added
 	p := filepath.Join(dir, "new.txt")
-	os.WriteFile(p, []byte("x"), 0644)
+	_ = os.WriteFile(p, []byte("x"), 0644)
 	waitFor(t, func() bool { return len(host.emittedMsgs()) >= 1 }, "added event")
 	m := host.emittedMsgs()[0]
 	if m.GetMetadata()["event"] != "added" || m.GetMetadata()["type"] != "file" {
@@ -103,7 +103,7 @@ func TestWatchEmitsChanges(t *testing.T) {
 	}
 
 	// removed
-	os.Remove(p)
+	_ = os.Remove(p)
 	waitFor(t, func() bool {
 		for _, e := range host.emittedMsgs() {
 			if e.GetMetadata()["event"] == "removed" {
@@ -117,18 +117,18 @@ func TestWatchEmitsChanges(t *testing.T) {
 func TestWatchChangedAndRecursive(t *testing.T) {
 	dir := t.TempDir()
 	sub := filepath.Join(dir, "sub")
-	os.MkdirAll(sub, 0755)
+	_ = os.MkdirAll(sub, 0755)
 	p := filepath.Join(sub, "deep.txt")
-	os.WriteFile(p, []byte("v1"), 0644)
+	_ = os.WriteFile(p, []byte("v1"), 0644)
 
 	host := &fakeHost{}
 	n := newNode(&WatchConfig{Filename: dir, Interval: 0.02, Recursive: true}, host)
-	defer n.Stop()
-	n.Execute(context.Background(), nodestore.NewMessage())
+	defer func() { _ = n.Stop() }()
+	_, _ = n.Execute(context.Background(), nodestore.NewMessage())
 
 	// modify the deep file: sleep ensures mtime differs on coarse fs timestamps
 	time.Sleep(30 * time.Millisecond)
-	os.WriteFile(p, []byte("v2-longer"), 0644)
+	_ = os.WriteFile(p, []byte("v2-longer"), 0644)
 	waitFor(t, func() bool {
 		for _, e := range host.emittedMsgs() {
 			if e.GetMetadata()["event"] == "changed" {
@@ -158,7 +158,7 @@ func TestWatchMultiplePaths(t *testing.T) {
 	host := &fakeHost{}
 	// A comma-separated Path watches every entry (Node-RED files parity).
 	n := newNode(&WatchConfig{Filename: dir1 + "," + dir2, Interval: 0.02}, host)
-	defer n.Stop()
+	defer func() { _ = n.Stop() }()
 	out, err := n.Execute(context.Background(), nodestore.NewMessage())
 	if err != nil {
 		t.Fatalf("execute failed: %v", err)
@@ -169,8 +169,8 @@ func TestWatchMultiplePaths(t *testing.T) {
 
 	p1 := filepath.Join(dir1, "a.txt")
 	p2 := filepath.Join(dir2, "b.txt")
-	os.WriteFile(p1, []byte("x"), 0644)
-	os.WriteFile(p2, []byte("y"), 0644)
+	_ = os.WriteFile(p1, []byte("x"), 0644)
+	_ = os.WriteFile(p2, []byte("y"), 0644)
 	waitFor(t, func() bool {
 		seen := map[string]bool{}
 		for _, e := range host.emittedMsgs() {
@@ -189,15 +189,15 @@ func TestWatchGlob(t *testing.T) {
 	host := &fakeHost{}
 	// A glob spec expands on every poll, so files created later match.
 	n := newNode(&WatchConfig{Filename: filepath.Join(dir, "*.txt"), Interval: 0.02}, host)
-	defer n.Stop()
+	defer func() { _ = n.Stop() }()
 	if _, err := n.Execute(context.Background(), nodestore.NewMessage()); err != nil {
 		t.Fatalf("execute failed: %v", err)
 	}
 
 	txt := filepath.Join(dir, "in.txt")
 	other := filepath.Join(dir, "out.md")
-	os.WriteFile(other, []byte("m"), 0644)
-	os.WriteFile(txt, []byte("x"), 0644)
+	_ = os.WriteFile(other, []byte("m"), 0644)
+	_ = os.WriteFile(txt, []byte("x"), 0644)
 	waitFor(t, func() bool {
 		for _, e := range host.emittedMsgs() {
 			if e.GetMetadata()["event"] == "added" && e.GetPayload() == txt {

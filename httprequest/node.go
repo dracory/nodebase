@@ -265,7 +265,7 @@ func (n *HTTPRequest) Execute(ctx context.Context, input nodestore.MessageInterf
 	if resp == nil {
 		return nil, fmt.Errorf("request failed: empty response")
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Read response body, capped: an upstream can stream unbounded
 	// data otherwise and a fast steady stream can exhaust memory

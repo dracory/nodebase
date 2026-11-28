@@ -71,14 +71,14 @@ func TestTCPOutDial(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen failed: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	got := make(chan []byte, 1)
 	go func() {
 		conn, err := ln.Accept()
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		// client mode keeps the connection open — read one chunk
 		// rather than ReadAll (which would wait for a close).
 		b := make([]byte, 64)
@@ -112,7 +112,7 @@ func TestTCPOutDialFailure(t *testing.T) {
 		t.Fatalf("probe listen failed: %v", err)
 	}
 	port := ln.Addr().(*net.TCPAddr).Port
-	ln.Close() // refuse connections
+	_ = ln.Close() // refuse connections
 	n := newNode(&TCPOutConfig{Host: "127.0.0.1", Port: port}, &fakeHost{})
 	if _, err := n.Execute(context.Background(), nodestore.NewMessage().SetPayload("x")); err == nil {
 		t.Fatal("unreachable target should fail")
@@ -123,8 +123,8 @@ func TestTCPOutReply(t *testing.T) {
 	// build a real loopback pair and register the server side as the
 	// session the reply mode looks up
 	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
+	defer func() { _ = clientConn.Close() }()
+	defer func() { _ = serverConn.Close() }()
 	got := make(chan []byte, 1)
 	go func() {
 		b := make([]byte, 64)
@@ -175,11 +175,11 @@ func TestTCPOutReplyBroadcast(t *testing.T) {
 	// Two pooled sessions, no message metadata — the reply writes to
 	// every pooled connection (Node-RED connectionPool semantics).
 	c1a, c1b := net.Pipe()
-	defer c1a.Close()
-	defer c1b.Close()
+	defer func() { _ = c1a.Close() }()
+	defer func() { _ = c1b.Close() }()
 	c2a, c2b := net.Pipe()
-	defer c2a.Close()
-	defer c2b.Close()
+	defer func() { _ = c2a.Close() }()
+	defer func() { _ = c2b.Close() }()
 	got := make(chan []byte, 2)
 	read := func(c net.Conn) {
 		b := make([]byte, 64)
@@ -219,7 +219,7 @@ func TestTCPOutClientPersistent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen failed: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	conns := make(chan net.Conn, 4)
 	go func() {
 		for {
@@ -234,7 +234,7 @@ func TestTCPOutClientPersistent(t *testing.T) {
 	port := ln.Addr().(*net.TCPAddr).Port
 	host := &fakeHost{}
 	n := newNode(&TCPOutConfig{Beserver: "client", Host: "127.0.0.1", Port: port}, host)
-	defer n.Stop()
+	defer func() { _ = n.Stop() }()
 	read := func(t *testing.T, conn net.Conn, want string) {
 		t.Helper()
 		_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
@@ -250,7 +250,7 @@ func TestTCPOutClientPersistent(t *testing.T) {
 		t.Fatalf("write 1: %v", err)
 	}
 	conn := <-conns
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	read(t, conn, "one")
 	if _, err := n.Execute(context.Background(), nodestore.NewMessage().SetPayload("two")); err != nil {
 		t.Fatalf("write 2: %v", err)
@@ -259,12 +259,12 @@ func TestTCPOutClientPersistent(t *testing.T) {
 
 	// end:true closes after the write; the next message re-dials.
 	n2 := newNodeID("t2", &TCPOutConfig{Beserver: "client", Host: "127.0.0.1", Port: port, End: true}, host)
-	defer n2.Stop()
+	defer func() { _ = n2.Stop() }()
 	if _, err := n2.Execute(context.Background(), nodestore.NewMessage().SetPayload("bye")); err != nil {
 		t.Fatalf("end write: %v", err)
 	}
 	conn2 := <-conns
-	defer conn2.Close()
+	defer func() { _ = conn2.Close() }()
 	read(t, conn2, "bye")
 	_ = conn2.SetReadDeadline(time.Now().Add(3 * time.Second))
 	if _, err := conn2.Read(make([]byte, 1)); err == nil {
@@ -274,7 +274,7 @@ func TestTCPOutClientPersistent(t *testing.T) {
 		t.Fatalf("redial write: %v", err)
 	}
 	conn3 := <-conns
-	defer conn3.Close()
+	defer func() { _ = conn3.Close() }()
 	read(t, conn3, "again")
 }
 
@@ -289,9 +289,9 @@ func TestTCPOutServerBroadcast(t *testing.T) {
 		t.Fatalf("probe listen failed: %v", err)
 	}
 	port := probe.Addr().(*net.TCPAddr).Port
-	probe.Close()
+	_ = probe.Close()
 	n.config.Port = port
-	defer n.Stop()
+	defer func() { _ = n.Stop() }()
 	if err := n.Activate(context.Background()); err != nil {
 		t.Fatalf("activate failed: %v", err)
 	}
@@ -300,7 +300,7 @@ func TestTCPOutServerBroadcast(t *testing.T) {
 	if err != nil {
 		t.Fatalf("client dial: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		n.state.mu.Lock()
@@ -338,8 +338,8 @@ func TestTCPOutValidate(t *testing.T) {
 func TestTCPSessions(t *testing.T) {
 	s := nodebase.NewTCPSessions()
 	c1, c2 := net.Pipe()
-	defer c1.Close()
-	defer c2.Close()
+	defer func() { _ = c1.Close() }()
+	defer func() { _ = c2.Close() }()
 	s.Put("k", c1)
 	if _, ok := s.Get("k"); !ok {
 		t.Fatal("session not stored")
